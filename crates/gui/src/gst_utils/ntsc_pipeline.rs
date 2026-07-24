@@ -176,7 +176,7 @@ impl NtscPipeline {
             // just now is either audio or video (or none of both, e.g. subtitles).
             let (is_audio, is_video) = {
                 let media_type = src_pad.current_caps().and_then(|caps| {
-                    debug!("{:?}", &caps);
+                    debug!("{:?}", caps);
                     caps.structure(0).map(|s| {
                         let name = s.name();
                         (name.starts_with("audio/"), name.starts_with("video/"))
@@ -414,7 +414,7 @@ impl NtscPipeline {
             // of those, one can send arbitrary rust types (using the pipeline's bus) into the mainloop.
             // What we send here is unpacked down below, in the iteration-code over sent bus-messages.
             if let Err(err) = insert_sink(is_audio, is_video) {
-                debug!("got error: {:?}", &err);
+                debug!("got error: {:?}", err);
                 element_error!(
                     dbin,
                     gstreamer::LibraryError::Failed,

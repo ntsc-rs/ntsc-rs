@@ -23,7 +23,7 @@ pub fn format_path_for_multi_file(path: impl AsRef<Path>) -> PathBuf {
                 num_digits += 1;
                 i += 1;
             }
-            sequence_path.extend([b'%', b'0']);
+            sequence_path.extend(*b"%0");
             sequence_path.extend(num_digits.to_string().bytes());
             sequence_path.push(b'd');
         } else {

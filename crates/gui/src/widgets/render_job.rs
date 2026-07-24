@@ -62,11 +62,9 @@ impl RenderJobWidget<'_> {
                                         error = job.pause_at_time(current_time).err();
                                     }
                                 }
-                                RenderJobState::Paused => {
-                                    if ui.button("▶").clicked() {
-                                        let current_time = ui.ctx().input(|input| input.time);
-                                        error = job.resume_at_time(current_time).err();
-                                    }
+                                RenderJobState::Paused if ui.button("▶").clicked() => {
+                                    let current_time = ui.ctx().input(|input| input.time);
+                                    error = job.resume_at_time(current_time).err();
                                 }
                                 _ => {}
                             }
