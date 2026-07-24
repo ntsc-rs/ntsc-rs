@@ -1,6 +1,7 @@
 //! Builds and bundles the standalone GUI as a macOS .app bundle.
 
-use crate::util::{PathBufExt, StatusExt, copy_recursive, workspace_dir};
+use crate::util::targets::{MACOS_AARCH64, MACOS_X86_64};
+use crate::util::{PathBufExt, StatusExt, build_gui_for_target, copy_recursive, workspace_dir};
 
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
@@ -36,43 +37,6 @@ pub fn command() -> clap::Command {
         )
 }
 
-/// Build the app for a given target, in either debug or release mode. This is called once in most cases, but when
-/// creating a macOS universal binary, it's called twice--once per architecture.
-/// This returns the path to the built binary.
-fn build_for_target(target: &str, release_mode: bool) -> std::io::Result<PathBuf> {
-    println!("Building application for target {}", target);
-
-    let mut cargo_args: Vec<_> = vec![
-        String::from("build"),
-        String::from("--package=ntsc-rs-gui"),
-        String::from("--target"),
-        target.to_string(),
-    ];
-    if release_mode {
-        cargo_args.push(String::from("--release"));
-    }
-    Command::new("cargo")
-        .args(&cargo_args)
-        // When cross-compiling, pkg-config will complain and fail by default. Cross-compilation works just fine, so we
-        // disable the check.
-        .env("PKG_CONFIG_ALLOW_CROSS", "1")
-        .status()
-        .expect_success()?;
-
-    let mut target_dir_path = workspace_dir().to_path_buf();
-    target_dir_path.extend(&[
-        "target",
-        target,
-        if cargo_args.contains(&String::from("--release")) {
-            "release"
-        } else {
-            "debug"
-        },
-    ]);
-
-    Ok(target_dir_path)
-}
-
 /// Use the `sips` utility built into macOS to resize an image (used for the application icon).
 /// See https://ss64.com/mac/sips.html.
 fn resize_image(
@@ -99,8 +63,8 @@ pub fn main(args: &clap::ArgMatches) -> Result<(), Box<dyn Error>> {
     // Build x86_64 and aarch64 binaries.
     // TODO: unlike the other macOS xtasks, this doesn't yet support choosing the targets.
     println!("Building binaries...");
-    let x86_64_dir = build_for_target("x86_64-apple-darwin", release_mode)?;
-    let aarch64_dir = build_for_target("aarch64-apple-darwin", release_mode)?;
+    let x86_64_dir = build_gui_for_target(MACOS_X86_64, release_mode)?;
+    let aarch64_dir = build_gui_for_target(MACOS_AARCH64, release_mode)?;
 
     // Extract gui version from Cargo.toml.
     println!("Getting version for Info.plist and creating bundle directories...");

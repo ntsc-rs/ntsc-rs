@@ -3,11 +3,13 @@ pub mod targets;
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
-    process::ExitStatus,
+    process::{Command, ExitStatus},
     sync::OnceLock,
 };
 
 use walkdir::{DirEntry, WalkDir};
+
+use crate::util::targets::Target;
 
 static WORKSPACE_DIR: OnceLock<PathBuf> = OnceLock::new();
 
@@ -97,4 +99,41 @@ pub fn copy_recursive(
     }
 
     Ok(())
+}
+
+/// Build the app for a given target, in either debug or release mode. This is called once in most cases, but when
+/// creating a macOS universal binary, it's called twice--once per architecture.
+/// This returns the path to the built binary.
+pub fn build_gui_for_target(target: &Target, release_mode: bool) -> std::io::Result<PathBuf> {
+    println!("Building application for target {}", target.target_triple);
+
+    let mut cargo_args: Vec<_> = vec![
+        String::from("build"),
+        String::from("--package=ntsc-rs-gui"),
+        String::from("--target"),
+        target.target_triple.to_string(),
+    ];
+    if release_mode {
+        cargo_args.push(String::from("--release"));
+    }
+    Command::new("cargo")
+        .args(&cargo_args)
+        // When cross-compiling, pkg-config will complain and fail by default. Cross-compilation works just fine, so we
+        // disable the check.
+        .env("PKG_CONFIG_ALLOW_CROSS", "1")
+        .status()
+        .expect_success()?;
+
+    let mut target_dir_path = workspace_dir().to_path_buf();
+    target_dir_path.extend(&[
+        "target",
+        target.target_triple,
+        if cargo_args.contains(&String::from("--release")) {
+            "release"
+        } else {
+            "debug"
+        },
+    ]);
+
+    Ok(target_dir_path)
 }

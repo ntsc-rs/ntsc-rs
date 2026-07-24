@@ -117,12 +117,8 @@ jobs:
       with:
         workspaces: ${{ env.FAST_WORKSPACE }}
 
-    - name: Build GUI
-      run: cargo build --release -p ntsc-rs-gui
-      working-directory: ${{ env.FAST_WORKSPACE }}
-
-    - name: Build OpenFX plugin
-      run: cargo xtask build-ofx-plugin --release
+    - name: Build Windows binary
+      run: cargo xtask windows-bundle --release
       working-directory: ${{ env.FAST_WORKSPACE }}
 
     - name: Build After Effects plugin
@@ -131,30 +127,8 @@ jobs:
         cp target\release\ntsc_rs_ae_plugin.dll .\ntsc-rs-ae.aex
       working-directory: ${{ env.FAST_WORKSPACE }}
 
-    - name: Package OpenFX plugin
+    - name: Build OpenFX plugin
       run: cargo xtask build-ofx-plugin --release
-      working-directory: ${{ env.FAST_WORKSPACE }}
-
-    - name: Archive Windows OpenFX plugin
-      uses: actions/upload-artifact@v4
-      if: ${{ github.ref_type == 'tag' }}
-      with:
-        name: ntsc-rs-windows-openfx
-        path: ${{ env.FAST_WORKSPACE }}/crates/openfx-plugin/build/
-
-    - name: Package Windows binary
-      if: ${{ github.ref_type == 'tag' }}
-      # Some things to note:
-      # - Robocopy has a non-zero exit code even when successful. We therefore clear it to 0 so that Actions doesn't
-      #   fail.
-      run: |
-        mkdir ntsc-rs-windows-standalone
-        cd ntsc-rs-windows-standalone
-        robocopy $Env:GSTREAMER_1_0_ROOT_MSVC_X86_64 .\ *.dll /s /copy:DT; if ($lastexitcode -lt 8) { $global:LASTEXITCODE = $null }
-        robocopy $Env:GSTREAMER_1_0_ROOT_MSVC_X86_64\share\licenses .\licenses /s /copy:DT; if ($lastexitcode -lt 8) { $global:LASTEXITCODE = $null }
-        cp ..\target\release\ntsc-rs-standalone.exe .\bin\
-        cp ..\target\release\ntsc-rs-cli.exe .\bin\
-        cp ..\target\release\ntsc-rs-launcher.exe .\
       working-directory: ${{ env.FAST_WORKSPACE }}
 
     - name: Archive Windows binary
@@ -162,7 +136,7 @@ jobs:
       if: ${{ github.ref_type == 'tag' }}
       with:
         name: ntsc-rs-windows-standalone
-        path: ${{ env.FAST_WORKSPACE }}/ntsc-rs-windows-standalone
+        path: ${{ env.FAST_WORKSPACE }}/build/ntsc-rs-windows-standalone
 
     - name: Archive Windows After Effects plugin
       uses: actions/upload-artifact@v4
@@ -170,6 +144,13 @@ jobs:
       with:
         name: ntsc-rs-windows-afterfx
         path: ${{ env.FAST_WORKSPACE }}/ntsc-rs-ae.aex
+
+    - name: Archive Windows OpenFX plugin
+      uses: actions/upload-artifact@v4
+      if: ${{ github.ref_type == 'tag' }}
+      with:
+        name: ntsc-rs-windows-openfx
+        path: ${{ env.FAST_WORKSPACE }}/crates/openfx-plugin/build/
 
   build-macos:
     runs-on: macos-14

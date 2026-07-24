@@ -4,7 +4,7 @@
 
 use clap::builder::PathBufValueParser;
 
-use crate::util::targets::{MACOS_AARCH64, MACOS_X86_64, TARGETS, Target};
+use crate::util::targets::{MACOS_AARCH64, MACOS_X86_64, Target};
 use crate::util::{PathBufExt, StatusExt, workspace_dir};
 
 use std::error::Error;
@@ -82,7 +82,10 @@ fn get_info_plist() -> plist::Value {
         "CFBundleIdentifier".to_string(),
         plist::Value::from("rs.ntsc.openfx"),
     );
-    info_plist_contents.insert("CFBundleVersion".to_string(), plist::Value::from(version.to_string()));
+    info_plist_contents.insert(
+        "CFBundleVersion".to_string(),
+        plist::Value::from(version.to_string()),
+    );
     info_plist_contents.insert(
         "CFBundleShortVersionString".to_string(),
         plist::Value::from(version.to_string()),
@@ -178,10 +181,7 @@ pub fn main(args: &clap::ArgMatches) -> Result<(), Box<dyn Error>> {
         (dst_path, x86_64_target.ofx_architecture)
     } else {
         let target_triple = args.get_one::<String>("target").unwrap();
-        let target = TARGETS
-            .iter()
-            .find(|candidate_target| candidate_target.target_triple == target_triple)
-            .unwrap_or_else(|| panic!("Your target \"{}\" is not supported", target_triple));
+        let target = Target::from_triple(target_triple).unwrap();
 
         (
             build_plugin_for_target(target, release_mode)?,

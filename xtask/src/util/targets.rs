@@ -1,5 +1,7 @@
 //! Contains information on the various build targets how their build artifacts are named.
 
+use std::error::Error;
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct Target {
     /// Cargo target triple for this target
@@ -13,6 +15,15 @@ pub struct Target {
     /// On Unix, it's "lib", so e.g. "foo" becomes "libfoo.so" or "libfoo.dylib". On Windows, there's no prefix, so it
     /// would just be "foo.dll".
     pub library_prefix: &'static str,
+}
+
+impl Target {
+    pub fn from_triple(triple: &str) -> Result<&'static Self, Box<dyn Error>> {
+        Ok(TARGETS
+            .iter()
+            .find(|candidate_target| candidate_target.target_triple == triple)
+            .ok_or_else(|| format!("Your target \"{}\" is not supported", triple))?)
+    }
 }
 
 // "Supported" target triples
