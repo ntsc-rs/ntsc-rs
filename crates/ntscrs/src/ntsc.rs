@@ -627,18 +627,15 @@ impl EffectCtx {
 
                         let prev_diff = (cur_sample - prev_sample).abs();
                         let next_diff = (cur_sample - next_sample).abs();
+
+                        let total_diff = (prev_diff + next_diff) * 0.5;
+                        let total_weight = (1.0 - (total_diff / 0.03)).clamp(0.0, 1.0);
                         
                         let blended = (cur_sample * 0.5)
-                            + (prev_sample * 0.25)
-                            + (next_sample * 0.25);
+                        	+ (prev_sample * 0.25)
+                        	+ (next_sample * 0.25);
                         
-                        y[sample_index] = if prev_diff < 0.03 && prev_diff < next_diff {
-                        	(cur_sample + prev_sample) * 0.5
-                        } else if next_diff < 0.03 && next_diff < prev_diff {
-                        	(cur_sample + next_sample) * 0.5
-                        } else {
-                        	y_notch[line_index * width + sample_index]
-                        };
+                        y[sample_index] = blended * total_weight + y_notch[line_index * width + sample_index] * (1.0 - total_weight);
                     }
 
                     let xi = self.chroma_phase_shift(phase_shift, phase_offset, line_index * 2);
