@@ -598,6 +598,10 @@ impl EffectCtx {
                 );
             }
             ChromaDemodulationFilter::TwoLineComb => {
+            	let mut y_notch = yiq.y.to_vec();
+            	let notch_filter: TransferFunction = make_notch_filter(0.5, 2.0);
+            	self.filter_plane(&mut y_notch, width, &notch_filter, InitialCondition::Zero, 0);
+            	
                 let lines = ZipChunks::new([yiq.y, yiq.i, yiq.q], width);
                 lines.par_for_each(|line_index, [y, i, q]| {
                     // For the first line, both prev_line and next_line point to the second line. This effectively makes
@@ -617,11 +621,24 @@ impl EffectCtx {
                     let next_line = &modulated[next_index * width..(next_index + 1) * width];
 
                     for sample_index in 0..width {
+                    	let prev_sample = prev_line[sample_index];
                         let cur_sample = cur_line[sample_index];
+                        let next_sample = next_line[sample_index];
+
+                        let prev_diff = (cur_sample - prev_sample).abs();
+                        let next_diff = (cur_sample - next_sample).abs();
+                        
                         let blended = (cur_sample * 0.5)
-                            + (prev_line[sample_index] * 0.25)
-                            + (next_line[sample_index] * 0.25);
-                        y[sample_index] = blended;
+                            + (prev_sample * 0.25)
+                            + (next_sample * 0.25);
+                        
+                        y[sample_index] = if prev_diff < 0.03 && prev_diff < next_diff {
+                        	(cur_sample + prev_sample) * 0.5
+                        } else if next_diff < 0.03 && next_diff < prev_diff {
+                        	(cur_sample + next_sample) * 0.5
+                        } else {
+                        	y_notch[line_index * width + sample_index]
+                        };
                     }
 
                     let xi = self.chroma_phase_shift(phase_shift, phase_offset, line_index * 2);
