@@ -629,7 +629,7 @@ impl EffectCtx {
                         let next_diff = (cur_sample - next_sample).abs();
 
                         let total_diff = (prev_diff + next_diff) * 0.5;
-                        let total_weight = (1.0 - (total_diff / 0.03)).clamp(0.0, 1.0);
+                        let total_weight = (1.0 - (total_diff / 0.5)).clamp(0.0, 1.0);
                         
                         let blended = (cur_sample * 0.5)
                         	+ (prev_sample * 0.25)
