@@ -3042,7 +3042,7 @@ dependencies = [
 
 [[package]]
 name = "ntsc-rs-gui"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "async-executor",
  "blocking",

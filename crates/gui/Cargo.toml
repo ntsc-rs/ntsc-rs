@@ -1,6 +1,6 @@
 [package]
 name = "ntsc-rs-gui"
-version = "0.9.5"
+version = "0.9.6"
 edition = "2024"
 default-run = "ntsc-rs-standalone"
 license = "GPL-3.0"
