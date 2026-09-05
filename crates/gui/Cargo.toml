@@ -8,7 +8,7 @@ repository = "https://github.com/valadaptive/ntsc-rs/tree/main/crates/gui"
 
 [dependencies]
 ntsc-rs = { path = "../ntscrs" }
-eframe = { version = "0.35", features = ["persistence", "x11", "wayland"] }
+eframe = { version = "0.36", features = ["persistence", "x11", "wayland"] }
 env_logger = "0.11.3"
 fontique = { git = "https://github.com/valadaptive/parley", branch = "yu-gothic-fix" }
 snafu = "0.9"
@@ -26,7 +26,7 @@ tinyjson = "2.5.1"
 open = "5.1.4"
 serde = "1.0"
 trash = "5.0.0"
-blocking = "1.6.1"
+blocking = "1.7"
 clap = { version = "4.5.17", features = ["cargo", "string"] }
 color-eyre = "0.6.3"
 console = "0.16"

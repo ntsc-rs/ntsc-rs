@@ -59,7 +59,6 @@ pub fn main(args: &clap::ArgMatches) -> Result<(), Box<dyn Error>> {
     println!("Building binaries...");
     let bin_dir = build_gui_for_target(target, release_mode)?;
     bin_dir.plus("ntsc-rs-standalone.exe");
-    &dst_bin_path;
     fs::copy(
         bin_dir.plus("ntsc-rs-standalone.exe"),
         dst_bin_path.plus("ntsc-rs-standalone.exe"),

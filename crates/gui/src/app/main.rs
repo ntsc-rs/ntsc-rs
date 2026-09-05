@@ -12,7 +12,8 @@ use std::{
 
 use blocking::unblock;
 use eframe::egui::{
-    self, Color32, ColorImage, Response, TextureOptions, util::undoer::Undoer, vec2,
+    self, Color32, ColorImage, DroppedFileHandle, Response, TextureOptions, util::undoer::Undoer,
+    vec2,
 };
 use futures_lite::Future;
 use gstreamer::{ClockTime, Fraction, glib::subclass::types::ObjectSubclassExt, prelude::*};
@@ -518,8 +519,8 @@ impl NtscApp {
 
     fn ensure_single_file_dropped(
         &self,
-        files: Option<Vec<egui::DroppedFile>>,
-    ) -> Option<egui::DroppedFile> {
+        files: Option<Vec<DroppedFileHandle>>,
+    ) -> Option<DroppedFileHandle> {
         files.and_then(|mut files| {
             let file = files.pop()?;
             if !files.is_empty() {
@@ -1006,8 +1007,6 @@ impl NtscApp {
                 collapse_state.openness(ui.ctx()),
             ))
             .show(ui, |ui| {
-                // Prevent buttons in the preset manager from having their outlines cut off
-                ui.visuals_mut().clip_rect_margin = 2.0;
                 let collapse_state = collapse_state.show_header(ui, |ui| {
                     // In order to properly resize the panel when we open the "Presets" header, we need to create the
                     // CollapsingState outside this UI. That means we can't just use a regular CollapsingHeader and must
@@ -1024,7 +1023,9 @@ impl NtscApp {
                 collapse_state.body_unindented(|ui| {
                     if let Some(dropped_presets) = ui.show_dnd_overlay("Drop to install presets") {
                         self.install_presets(
-                            dropped_presets.into_iter().filter_map(|file| file.path),
+                            dropped_presets
+                                .into_iter()
+                                .map(|file| file.path().to_owned()),
                         );
                     }
 
@@ -1033,15 +1034,12 @@ impl NtscApp {
             });
 
         egui::CentralPanel::default().show(ui, |ui| {
-            if let Some(egui::DroppedFile {
-                path: Some(preset_path),
-                ..
-            }) = self.ensure_single_file_dropped(ui.show_dnd_overlay("Drop to load preset"))
+            if let Some(handle) =
+                self.ensure_single_file_dropped(ui.show_dnd_overlay("Drop to load preset"))
             {
-                self.load_preset(preset_path);
+                self.load_preset(handle.path().to_owned());
             }
 
-            ui.visuals_mut().clip_rect_margin = 4.0;
             egui::ScrollArea::vertical()
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
@@ -1867,7 +1865,6 @@ impl NtscApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(0.0))
             .show(ui, |ui| {
-                ui.visuals_mut().clip_rect_margin = 0.0;
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     if let Some(info) = &mut self.pipeline {
                         let mut timecode = info.last_seek_pos.nseconds();
@@ -1892,13 +1889,10 @@ impl NtscApp {
                     egui::ScrollArea::both()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
-                            if let Some(egui::DroppedFile {
-                                path: Some(dropped_media_path),
-                                ..
-                            }) = self.ensure_single_file_dropped(
+                            if let Some(media) = self.ensure_single_file_dropped(
                                 ui.show_dnd_overlay("Drop to load media"),
                             ) {
-                                let res = self.load_video(ui.ctx(), dropped_media_path);
+                                let res = self.load_video(ui.ctx(), media.path().to_owned());
                                 self.handle_result(res);
                             }
                             ui.with_layout(
@@ -2292,7 +2286,6 @@ impl NtscApp {
             .default_size(425.0)
             .size_range(300.0..=800.0)
             .show(ui, |ui| {
-                ui.visuals_mut().clip_rect_margin = 0.0;
                 egui::Panel::top("left_tabs")
                     .interact_height(ui)
                     .show(ui, |ui| {
@@ -2325,7 +2318,6 @@ impl NtscApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(0.0))
             .show(ui, |ui| {
-                ui.visuals_mut().clip_rect_margin = 0.0;
                 self.show_video_pane(ui, frame);
             });
     }

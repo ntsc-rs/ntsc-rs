@@ -1,11 +1,17 @@
-use eframe::egui::{self, DroppedFile};
+use eframe::egui::{self, DroppedFileHandle};
 
 pub trait UiDndExt {
-    fn show_dnd_overlay(&mut self, text: impl Into<egui::RichText>) -> Option<Vec<DroppedFile>>;
+    fn show_dnd_overlay(
+        &mut self,
+        text: impl Into<egui::RichText>,
+    ) -> Option<Vec<DroppedFileHandle>>;
 }
 
 impl UiDndExt for egui::Ui {
-    fn show_dnd_overlay(&mut self, text: impl Into<egui::RichText>) -> Option<Vec<DroppedFile>> {
+    fn show_dnd_overlay(
+        &mut self,
+        text: impl Into<egui::RichText>,
+    ) -> Option<Vec<DroppedFileHandle>> {
         let max_rect = self.max_rect();
 
         let pointer_in_drop_area = self.ctx().input(|input| {
@@ -52,7 +58,7 @@ impl UiDndExt for egui::Ui {
 
 pub trait CtxDndExt {
     fn update_dnd_state(&self);
-    fn take_dropped_files_last_frame(&self) -> Option<Vec<DroppedFile>>;
+    fn take_dropped_files_last_frame(&self) -> Option<Vec<DroppedFileHandle>>;
 }
 
 impl CtxDndExt for egui::Context {
@@ -72,7 +78,7 @@ impl CtxDndExt for egui::Context {
         });
 
         self.data_mut(|data| {
-            data.remove_temp::<Vec<DroppedFile>>(files_id);
+            data.remove_temp::<Vec<DroppedFileHandle>>(files_id);
 
             if let Some(dropped_files) = dropped_files {
                 data.insert_temp(files_id, dropped_files);
@@ -80,8 +86,8 @@ impl CtxDndExt for egui::Context {
         });
     }
 
-    fn take_dropped_files_last_frame(&self) -> Option<Vec<DroppedFile>> {
+    fn take_dropped_files_last_frame(&self) -> Option<Vec<DroppedFileHandle>> {
         let files_id = egui::Id::new("dropped_files_last_frame");
-        self.data_mut(|data| data.remove_temp::<Vec<DroppedFile>>(files_id))
+        self.data_mut(|data| data.remove_temp::<Vec<DroppedFileHandle>>(files_id))
     }
 }
