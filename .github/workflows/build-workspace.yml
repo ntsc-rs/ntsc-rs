@@ -153,7 +153,7 @@ jobs:
         path: ${{ env.FAST_WORKSPACE }}/crates/openfx-plugin/build/
 
   build-macos:
-    runs-on: macos-14
+    runs-on: macos-26
 
     steps:
     - name: Checkout
@@ -161,20 +161,32 @@ jobs:
       with:
         submodules: recursive
 
-    - name: Set deployment target
-      run: echo 'MACOSX_DEPLOYMENT_TARGET=10.12' >> $GITHUB_ENV
+    - name: Set deployment target + GStreamer version
+      run: |
+        echo 'MACOSX_DEPLOYMENT_TARGET=10.12' >> $GITHUB_ENV
+        echo 'GST_VERSION=1.28.6' >> $GITHUB_ENV
 
     - name: Add x86_64 target
       run: |
         rustup target add x86_64-apple-darwin
 
-    - name: Install packages
+    - name: Cache GStreamer packages
+      id: cache-gstreamer
+      uses: actions/cache@v6
+      with:
+        path: gst-pkgs
+        key: ${{ env.GST_VERSION }}-pkgs
+
+    - name: Download GStreamer packages
+      if: steps.cache-gstreamer.outputs.cache-hit != 'true'
       run: |
-        brew install --cask gstreamer-runtime
-        brew install --cask gstreamer-development
+        curl --create-dirs --output-dir gst-pkgs --fail --location -O "https://gstreamer.freedesktop.org/data/pkg/osx/${GST_VERSION}/gstreamer-1.0-${GST_VERSION}-universal.pkg"
+        curl --create-dirs --output-dir gst-pkgs --fail --location -O "https://gstreamer.freedesktop.org/data/pkg/osx/${GST_VERSION}/gstreamer-1.0-devel-${GST_VERSION}-universal.pkg"
 
     - name: Setup GStreamer devel
       run: |
+        sudo installer -pkg "gst-pkgs/gstreamer-1.0-${GST_VERSION}-universal.pkg" -target /
+        sudo installer -pkg "gst-pkgs/gstreamer-1.0-devel-${GST_VERSION}-universal.pkg" -target /
         echo "/Library/Frameworks/GStreamer.framework/Versions/1.0/bin" >> $GITHUB_PATH
         echo 'PKG_CONFIG_PATH="/Library/Frameworks/GStreamer.framework/Versions/1.0/lib/pkgconfig"' >> $GITHUB_ENV
 
