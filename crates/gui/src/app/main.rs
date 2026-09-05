@@ -12,8 +12,8 @@ use std::{
 
 use blocking::unblock;
 use eframe::egui::{
-    self, Color32, ColorImage, DroppedFileHandle, Response, TextureOptions, util::undoer::Undoer,
-    vec2,
+    self, Color32, ColorImage, DroppedFileHandle, Response, TextureOptions, UiBuilder,
+    util::undoer::Undoer, vec2,
 };
 use futures_lite::Future;
 use gstreamer::{ClockTime, Fraction, glib::subclass::types::ObjectSubclassExt, prelude::*};
@@ -2285,10 +2285,12 @@ impl NtscApp {
             .resizable(true)
             .default_size(425.0)
             .size_range(300.0..=800.0)
-            .show(ui, |ui| {
+            .show(ui, |parent_ui| {
+                let mut ui = parent_ui.new_child(UiBuilder::new());
+
                 egui::Panel::top("left_tabs")
-                    .interact_height(ui)
-                    .show(ui, |ui| {
+                    .interact_height(&mut ui)
+                    .show(&mut ui, |ui| {
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                             ui.selectable_value(
                                 &mut self.left_panel_state,
@@ -2305,7 +2307,7 @@ impl NtscApp {
 
                 egui::CentralPanel::default()
                     .frame(egui::Frame::central_panel(ui.style()).inner_margin(0.0))
-                    .show(ui, |ui| match self.left_panel_state {
+                    .show(&mut ui, |ui| match self.left_panel_state {
                         LeftPanelState::EffectSettings => {
                             self.show_effect_settings(ui, frame);
                         }
@@ -2313,6 +2315,11 @@ impl NtscApp {
                             self.show_render_settings(ui, frame);
                         }
                     });
+
+                // Take up exactly as much space as the resizable panel thinks. There are some really annoying egui bugs
+                // in this area that the maintainer repeatedly claims to have fixed
+                // (https://github.com/ntsc-rs/ntsc-rs/issues/780, https://github.com/emilk/egui/pull/8198).
+                parent_ui.advance_cursor_after_rect(parent_ui.available_rect_before_wrap());
             });
 
         egui::CentralPanel::default()
