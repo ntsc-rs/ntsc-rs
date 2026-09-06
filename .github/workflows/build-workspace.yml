@@ -101,6 +101,7 @@ jobs:
       #   seemingly chosen at random.
       # - We need to export said path to the environment variables so that later steps can use it.
       run: |
+        Import-Module $env:ChocolateyInstall\helpers\chocolateyProfile.psm1
         & "D:\gst-pkgs\gstreamer-1.0-msvc-x86_64-${Env:GST_VERSION}.exe" /TYPE=devel /ALLUSERS /SILENT /NORESTART /COMPONENTS="${Env:GST_COMPONENTS}"
         refreshenv
         echo "$($Env:GSTREAMER_1_0_ROOT_MSVC_X86_64)bin"
@@ -181,6 +182,9 @@ jobs:
         # Extract choices.xml
         sudo installer -pkg "gst-pkgs/gstreamer-1.0-${GST_VERSION}-universal.pkg" -target / -showChoicesXML > gst-pkgs/choices_runtime.xml
         sudo installer -pkg "gst-pkgs/gstreamer-1.0-devel-${GST_VERSION}-universal.pkg" -target / -showChoicesXML > gst-pkgs/choices_devel.xml
+
+        cat gst-pkgs/choices_runtime.xml
+        cat gst-pkgs/choices_devel.xml
 
         # Patch choices.xml to include the desired list of components
         cargo xtask macos-gst-components --components "$GST_COMPONENTS" gst-pkgs/choices_runtime.xml
