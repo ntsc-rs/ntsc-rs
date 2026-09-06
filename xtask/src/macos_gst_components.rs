@@ -63,13 +63,17 @@ pub fn main(args: &clap::ArgMatches) -> Result<(), Box<dyn Error>> {
             continue;
         };
 
-        if !suffix.starts_with("gstreamer-1.0-") {
+        // The development package uses the same component names as the runtime package,
+        // but appends `-devel` to every choice identifier.
+        let component = suffix.strip_suffix("-devel").unwrap_or(suffix);
+
+        if !component.starts_with("gstreamer-1.0-") {
             // We don't want to disable any components that aren't GStreamer...bundles?
             continue;
         }
 
-        // This was in the list of components to *keep*
-        let should_keep = components.remove(suffix);
+        // This was in the list of components to *keep*.
+        let should_keep = components.remove(component);
 
         let setting = choice_dict
             .get_mut("attributeSetting")

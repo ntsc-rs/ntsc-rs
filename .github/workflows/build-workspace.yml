@@ -188,7 +188,7 @@ jobs:
 
         # Install the packages
         sudo installer -pkg "gst-pkgs/gstreamer-1.0-${GST_VERSION}-universal.pkg" -applyChoiceChangesXML gst-pkgs/choices_runtime.xml -target /
-        sudo installer -pkg "gst-pkgs/gstreamer-1.0-devel-${GST_VERSION}-universal.pkg" -applyChoiceChangesXML gst-pkgs/choices_runtime.xml -target /
+        sudo installer -pkg "gst-pkgs/gstreamer-1.0-devel-${GST_VERSION}-universal.pkg" -applyChoiceChangesXML gst-pkgs/choices_devel.xml -target /
 
         # Set up environment variables
         echo "/Library/Frameworks/GStreamer.framework/Versions/1.0/bin" >> $GITHUB_PATH
