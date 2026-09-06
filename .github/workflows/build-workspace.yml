@@ -118,15 +118,33 @@ jobs:
         $componentArgument = "/COMPONENTS=$($innoComponents -join ',')"
         Write-Host $componentArgument
 
-        & "D:\gst-pkgs\gstreamer-1.0-msvc-x86_64-${Env:GST_VERSION}.exe" /TYPE=custom /ALLUSERS /SILENT /NORESTART $componentArgument
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $installerPath = "D:\gst-pkgs\gstreamer-1.0-msvc-x86_64-${Env:GST_VERSION}.exe"
+        $installerLog = "D:\gst-pkgs\install.log"
+        $installerArguments = @(
+          "/TYPE=custom"
+          "/ALLUSERS"
+          "/SILENT"
+          "/NORESTART"
+          $componentArgument
+          "/LOG=$installerLog"
+        )
+        $installerProcess = Start-Process -FilePath $installerPath -ArgumentList $installerArguments -Wait -PassThru
+        if ($installerProcess.ExitCode -ne 0) {
+          if (Test-Path $installerLog) { Get-Content $installerLog }
+          throw "GStreamer installer exited with code $($installerProcess.ExitCode)"
+        }
 
         refreshenv
         $gstRoot = $Env:GSTREAMER_1_0_ROOT_MSVC_X86_64
+        if ([string]::IsNullOrWhiteSpace($gstRoot)) {
+          if (Test-Path $installerLog) { Get-Content $installerLog }
+          throw "GStreamer installer did not set GSTREAMER_1_0_ROOT_MSVC_X86_64"
+        }
         $gstBin = Join-Path $gstRoot "bin"
         $gstPkgConfig = Join-Path $gstRoot "lib\pkgconfig"
         $gstPbutilsLib = Join-Path $gstRoot "lib\gstpbutils-1.0.lib"
         if (!(Test-Path $gstPbutilsLib)) {
+          if (Test-Path $installerLog) { Get-Content $installerLog }
           throw "GStreamer development library was not installed: $gstPbutilsLib"
         }
 
