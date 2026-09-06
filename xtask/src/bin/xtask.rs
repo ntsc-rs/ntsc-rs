@@ -5,7 +5,9 @@
 
 use std::process;
 
-use xtask::{build_ofx_plugin, macos_ae_plugin, macos_bundle, macos_gst_components, windows_bundle};
+use xtask::{
+    build_ofx_plugin, macos_ae_plugin, macos_bundle, macos_gst_components, windows_bundle,
+};
 
 fn main() {
     let cmd = clap::Command::new("xtask")

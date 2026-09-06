@@ -7,7 +7,6 @@ use std::{
     borrow::BorrowMut,
     fs::File,
     mem::{self, MaybeUninit},
-    num::NonZero,
 };
 
 use after_effects::{self as ae};
@@ -23,7 +22,6 @@ use ntsc_rs::{
         self, AfterEffectsU16, Bgrx, BlitInfo, DeinterlaceMode, Xrgb, YiqField, YiqView,
     },
 };
-use raw_window_handle::Win32WindowHandle;
 use window_handle::WindowAndDisplayHandle;
 
 struct Plugin {
@@ -832,8 +830,9 @@ impl Plugin {
                 utility.main_hwnd()? as usize as isize
             };
 
-            Ok(NonZero::<isize>::new(hwnd)
-                .map(|hwnd| unsafe { WindowAndDisplayHandle::new(Win32WindowHandle::new(hwnd)) }))
+            Ok(std::num::NonZero::<isize>::new(hwnd).map(|hwnd| unsafe {
+                WindowAndDisplayHandle::new(raw_window_handle::Win32WindowHandle::new(hwnd))
+            }))
         }
 
         #[cfg(not(windows))]
