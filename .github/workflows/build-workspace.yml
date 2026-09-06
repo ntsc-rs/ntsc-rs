@@ -102,11 +102,38 @@ jobs:
       # - We need to export said path to the environment variables so that later steps can use it.
       run: |
         Import-Module $env:ChocolateyInstall\helpers\chocolateyProfile.psm1
-        & "D:\gst-pkgs\gstreamer-1.0-msvc-x86_64-${Env:GST_VERSION}.exe" /TYPE=devel /ALLUSERS /SILENT /NORESTART /COMPONENTS="${Env:GST_COMPONENTS}"
+
+        # The Inno Setup component IDs differ from the Cerbero package names in
+        # GST_COMPONENTS. Select both halves of each package because the import
+        # libraries and headers are in `/devel`, while the DLLs are in `/runtime`.
+        # The base packages are transitive dependencies but Inno Setup does not
+        # automatically select their development components.
+        $packageNames = @("base-system-1.0", "base-crypto") + ($Env:GST_COMPONENTS -split ',')
+        $innoComponents = foreach ($packageName in $packageNames) {
+          $component = $packageName -replace '[-./ @+]', '_'
+          $component
+          "$component/runtime"
+          "$component/devel"
+        }
+        $componentArgument = "/COMPONENTS=$($innoComponents -join ',')"
+        Write-Host $componentArgument
+
+        & "D:\gst-pkgs\gstreamer-1.0-msvc-x86_64-${Env:GST_VERSION}.exe" /TYPE=custom /ALLUSERS /SILENT /NORESTART $componentArgument
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
         refreshenv
-        echo "$($Env:GSTREAMER_1_0_ROOT_MSVC_X86_64)bin"
-        echo "$($Env:GSTREAMER_1_0_ROOT_MSVC_X86_64)bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-        echo "GSTREAMER_1_0_ROOT_MSVC_X86_64=$Env:GSTREAMER_1_0_ROOT_MSVC_X86_64" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        $gstRoot = $Env:GSTREAMER_1_0_ROOT_MSVC_X86_64
+        $gstBin = Join-Path $gstRoot "bin"
+        $gstPkgConfig = Join-Path $gstRoot "lib\pkgconfig"
+        $gstPbutilsLib = Join-Path $gstRoot "lib\gstpbutils-1.0.lib"
+        if (!(Test-Path $gstPbutilsLib)) {
+          throw "GStreamer development library was not installed: $gstPbutilsLib"
+        }
+
+        echo $gstBin
+        echo $gstBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        echo "GSTREAMER_1_0_ROOT_MSVC_X86_64=$gstRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        echo "PKG_CONFIG_PATH=$gstPkgConfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
     - uses: Swatinem/rust-cache@v2
       with:
@@ -179,9 +206,9 @@ jobs:
 
     - name: Setup GStreamer devel
       run: |
-        # Extract choices.xml
-        sudo installer -pkg "gst-pkgs/gstreamer-1.0-${GST_VERSION}-universal.pkg" -target / -showChoicesXML > gst-pkgs/choices_runtime.xml
-        sudo installer -pkg "gst-pkgs/gstreamer-1.0-devel-${GST_VERSION}-universal.pkg" -target / -showChoicesXML > gst-pkgs/choices_devel.xml
+        # Extract choices.xml.
+        sudo installer -pkg "gst-pkgs/gstreamer-1.0-${GST_VERSION}-universal.pkg" -target / -showChoiceChangesXML > gst-pkgs/choices_runtime.xml
+        sudo installer -pkg "gst-pkgs/gstreamer-1.0-devel-${GST_VERSION}-universal.pkg" -target / -showChoiceChangesXML > gst-pkgs/choices_devel.xml
 
         cat gst-pkgs/choices_runtime.xml
         cat gst-pkgs/choices_devel.xml
