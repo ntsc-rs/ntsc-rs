@@ -32,8 +32,7 @@ use ntsc_rs_gui::{
         render_job::{RenderJob, RenderJobState, SharedRenderJob},
         render_settings::{
             Ffv1BitDepth, Ffv1Settings, H264Settings, OutputCodec, PngSequenceSettings,
-            PngSettings, RenderInterlaceMode, RenderPipelineCodec, RenderPipelineSettings,
-            StillImageSettings,
+            PngSettings, RenderPipelineCodec, RenderPipelineSettings, StillImageSettings,
         },
         ui_context::UIContext,
     },
@@ -506,7 +505,7 @@ pub fn main() -> Result<()> {
                 }),
             },
             output_path: output_path.clone(),
-            interlacing: RenderInterlaceMode::from_use_field(settings.use_field, interlace),
+            interlaced_output: settings.use_field.interlaced_output_allowed() && interlace,
             effect_settings: settings,
         },
         &StillImageSettings {

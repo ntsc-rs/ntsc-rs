@@ -8,7 +8,7 @@ use std::{
 
 use futures_lite::FutureExt;
 use gstreamer::{ClockTime, prelude::*};
-use gstreamer_video::{VideoFormat, VideoInterlaceMode};
+use gstreamer_video::VideoFormat;
 use log::debug;
 use snafu::ResultExt;
 
@@ -26,8 +26,7 @@ use super::{
     error::{ApplicationError, CreatePipelineSnafu, CreateRenderJobSnafu, RenderJobPipelineSnafu},
     executor::ApplessExecutor,
     render_settings::{
-        Ffv1BitDepth, H264Settings, PngSettings, RenderInterlaceMode, RenderPipelineCodec,
-        StillImageSettings,
+        Ffv1BitDepth, H264Settings, PngSettings, RenderPipelineCodec, StillImageSettings,
     },
     ui_context::UIContext,
 };
@@ -198,7 +197,7 @@ impl RenderJob {
                     Ok(None)
                 }
             },
-            move |pipeline, VideoElemMetadata { interlace_mode, .. }| {
+            move |pipeline, VideoElemMetadata { .. }| {
                 let (_, video_out) = output_elems_cell_video
                     .get_or_init(|| create_output_elems_video(pipeline))
                     .as_ref()
@@ -294,6 +293,10 @@ impl RenderJob {
                         "settings",
                         NtscFilterSettings(settings_video_closure.effect_settings.clone()),
                     )
+                    .property(
+                        "force-interlaced-output",
+                        settings_video_closure.interlaced_output,
+                    )
                     .build()?;
                 elems.push(video_ntsc.clone());
 
@@ -320,34 +323,6 @@ impl RenderJob {
 
                 let video_convert = gstreamer::ElementFactory::make("videoconvert").build()?;
                 elems.push(video_convert);
-
-                if settings_video_closure.interlacing != RenderInterlaceMode::Progressive
-                    && matches!(interlace_mode, Some(VideoInterlaceMode::Progressive))
-                    && !settings_video_closure.codec_settings.is_image_sequence()
-                {
-                    // Load the interlace plugin so the enum class exists. Nothing seems to work except actually instantiating an Element.
-                    let _ = gstreamer::ElementFactory::make("interlace")
-                        .build()
-                        .unwrap();
-                    #[allow(non_snake_case)]
-                    let GstInterlacePattern = gstreamer::glib::EnumClass::with_type(
-                        gstreamer::glib::Type::from_name("GstInterlacePattern").unwrap(),
-                    )
-                    .unwrap();
-
-                    let interlace = gstreamer::ElementFactory::make("interlace")
-                        .property(
-                            "field-pattern",
-                            GstInterlacePattern.to_value_by_nick("2:2").unwrap(),
-                        )
-                        .property(
-                            "top-field-first",
-                            settings_video_closure.interlacing
-                                == RenderInterlaceMode::TopFieldFirst,
-                        )
-                        .build()?;
-                    elems.push(interlace);
-                }
 
                 let video_caps = gstreamer_video::VideoCapsBuilder::new()
                     .format_list(pixel_formats.iter().copied())

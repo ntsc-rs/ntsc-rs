@@ -65,8 +65,7 @@ use super::{
     render_job::RenderJob,
     render_settings::{
         Ffv1BitDepth, H264Settings, OutputCodec, PngSequenceSettings, PngSettings,
-        RenderInterlaceMode, RenderPipelineCodec, RenderPipelineSettings, RenderSettings,
-        StillImageSettings,
+        RenderPipelineCodec, RenderPipelineSettings, RenderSettings, StillImageSettings,
     },
     system_fonts::system_fallback_fonts,
 };
@@ -1553,8 +1552,10 @@ impl NtscApp {
                                     if let Some(interlace_mode) = metadata.interlace_mode {
                                         fps_display.push_str(match interlace_mode {
                                             VideoInterlaceMode::Progressive => " (progressive)",
-                                            VideoInterlaceMode::Interleaved => " (interlaced)",
-                                            VideoInterlaceMode::Mixed => " (telecined)",
+                                            // I had hoped that `Mixed` meant "telecined", but it seems that
+                                            // plain-interleaved H.264 videos are `Mixed` too.
+                                            VideoInterlaceMode::Interleaved
+                                            | VideoInterlaceMode::Mixed => " (interlaced)",
                                             _ => "",
                                         });
                                     }
@@ -1623,7 +1624,7 @@ impl NtscApp {
                                                 settings: Default::default(),
                                             }),
                                             output_path: handle.into(),
-                                            interlacing: RenderInterlaceMode::Progressive,
+                                            interlaced_output: false,
                                             effect_settings: app.effect_settings.clone(),
                                         },
                                     );
@@ -2289,7 +2290,7 @@ impl NtscApp {
                 let mut ui = parent_ui.new_child(UiBuilder::new());
 
                 egui::Panel::top("left_tabs")
-                    .interact_height(&mut ui)
+                    .interact_height(&ui)
                     .show(&mut ui, |ui| {
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                             ui.selectable_value(
