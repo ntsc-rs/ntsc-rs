@@ -46,7 +46,7 @@ jobs:
       run: cargo xtask build-ofx-plugin --release
 
     - name: Archive Linux OpenFX plugin
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       if: ${{ github.ref_type == 'tag' }}
       with:
         name: ntsc-rs-linux-openfx
@@ -59,7 +59,7 @@ jobs:
         cp target/release/ntsc-rs-cli ntsc-rs-linux-standalone
 
     - name: Archive Linux binary
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       if: ${{ github.ref_type == 'tag' }}
       with:
         name: ntsc-rs-linux-standalone
@@ -172,21 +172,21 @@ jobs:
       working-directory: ${{ env.FAST_WORKSPACE }}
 
     - name: Archive Windows binary
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       if: ${{ github.ref_type == 'tag' }}
       with:
         name: ntsc-rs-windows-standalone
         path: ${{ env.FAST_WORKSPACE }}/build/ntsc-rs-windows-standalone
 
     - name: Archive Windows After Effects plugin
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       if: ${{ github.ref_type == 'tag' }}
       with:
         name: ntsc-rs-windows-afterfx
         path: ${{ env.FAST_WORKSPACE }}/ntsc-rs-ae.aex
 
     - name: Archive Windows OpenFX plugin
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       if: ${{ github.ref_type == 'tag' }}
       with:
         name: ntsc-rs-windows-openfx
@@ -264,7 +264,7 @@ jobs:
         pkgbuild --install-location "/Library/Application Support/Adobe/Common/Plug-ins/7.0/MediaCore" --component build/ntsc-rs-afterfx/ntsc-rs.plugin --min-os-version $MACOSX_DEPLOYMENT_TARGET --scripts assets/install_scripts --compression latest build/ntsc-rs-macos-afterfx.pkg
 
     - name: Archive .pkg installers
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       if: ${{ github.ref_type == 'tag' }}
       with:
         name: ntsc-rs-macos
@@ -287,7 +287,7 @@ jobs:
       uses: actions/checkout@v6
 
     - name: Download artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v7
       with:
         path: ./artifacts
 
