@@ -1,6 +1,7 @@
 pub mod clock_format;
 pub mod egui_sink;
 pub mod gstreamer_error;
+pub mod image_freeze;
 pub mod init;
 pub mod multi_file_path;
 pub mod ntsc_pipeline;
@@ -9,10 +10,14 @@ pub mod process_gst_frame;
 pub mod video_pad_filter;
 
 pub mod elements {
-    use super::{egui_sink, ntscrs_filter, video_pad_filter};
+    use super::{egui_sink, image_freeze, ntscrs_filter, video_pad_filter};
     use gstreamer::glib;
     glib::wrapper! {
         pub struct EguiSink(ObjectSubclass<egui_sink::EguiSink>) @extends gstreamer_video::VideoSink, gstreamer_base::BaseSink, gstreamer::Element, gstreamer::Object;
+    }
+
+    glib::wrapper! {
+        pub struct ImageFreeze(ObjectSubclass<image_freeze::ImageFreeze>) @extends gstreamer::Element, gstreamer::Object;
     }
 
     glib::wrapper! {

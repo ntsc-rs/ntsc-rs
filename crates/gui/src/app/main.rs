@@ -1527,7 +1527,7 @@ impl NtscApp {
                                     if ui
                                         .add(
                                             egui::DragValue::new(&mut new_framerate)
-                                                .range(0.0..=240.0),
+                                                .range(1.0..=240.0),
                                         )
                                         .changed()
                                     {
