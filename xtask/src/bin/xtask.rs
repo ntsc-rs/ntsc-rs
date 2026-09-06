@@ -5,7 +5,7 @@
 
 use std::process;
 
-use xtask::{build_ofx_plugin, macos_ae_plugin, macos_bundle, windows_bundle};
+use xtask::{build_ofx_plugin, macos_ae_plugin, macos_bundle, macos_gst_components, windows_bundle};
 
 fn main() {
     let cmd = clap::Command::new("xtask")
@@ -13,6 +13,7 @@ fn main() {
         .subcommand(build_ofx_plugin::command())
         .subcommand(macos_ae_plugin::command())
         .subcommand(macos_bundle::command())
+        .subcommand(macos_gst_components::command())
         .subcommand(windows_bundle::command());
 
     let matches = cmd.get_matches();
@@ -25,6 +26,9 @@ fn main() {
         }
         "macos-bundle" => {
             macos_bundle::main(args).unwrap();
+        }
+        "macos-gst-components" => {
+            macos_gst_components::main(args).unwrap();
         }
         "build-ofx-plugin" => {
             build_ofx_plugin::main(args).unwrap();

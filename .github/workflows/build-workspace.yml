@@ -11,6 +11,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  GST_VERSION: 1.28.6
+  # Which GStreamer components should we include in the bundles?
+  # The components are defined in cerbero (see https://gitlab.freedesktop.org/gstreamer/cerbero/-/tree/main/packages).
+  # Compared to the default set, we disable `effects`, `net`, `visualizers`, `analytics`, and `qt5`/`qt6`; and enable `codecs-gpl`, `codecs-gpl-restricted`, and `libav`.
+  GST_COMPONENTS: gstreamer-1.0-core,gstreamer-1.0-system,gstreamer-1.0-playback,gstreamer-1.0-codecs,gstreamer-1.0-codecs-gpl,gstreamer-1.0-codecs-restricted,gstreamer-1.0-codecs-gpl-restricted,gstreamer-1.0-libav
 
 jobs:
   build-linux:
@@ -76,21 +81,17 @@ jobs:
       run: |
         Copy-Item -Path "${{ github.workspace }}" -Destination "${{ env.FAST_WORKSPACE }}" -Recurse
 
-      # Put the Chocolatey temp directory in a place where we can use the cache action to save and restore it.
-    - name: Set Chocolatey temp directory
-      run: |
-        choco config set cacheLocation --value "D:\chocolatey_cache"
-        echo "CHOCO_TEMP=D:\chocolatey_cache" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
-
-    - name: Get current GStreamer package version
-      run: echo "GST_PACKAGE_VERSION=$(choco info -y --limit-output gstreamer)" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
-
-    - name: Restore Chocolatey cache
-      id: choco-cache-restore
-      uses: actions/cache/restore@v4
+    - name: Cache GStreamer packages
+      id: cache-gstreamer
+      uses: actions/cache@v6
       with:
-        path: ${{ env.CHOCO_TEMP }}
-        key: choco-${{ github.job }}-${{ env.GST_PACKAGE_VERSION }}
+        path: D:\gst-pkgs
+        key: ${{ env.GST_VERSION }}-pkgs
+
+    - name: Download GStreamer packages
+      if: steps.cache-gstreamer.outputs.cache-hit != 'true'
+      run: |
+        Invoke-WebRequest -Uri "https://gstreamer.freedesktop.org/data/pkg/windows/${Env:GST_VERSION}/msvc/gstreamer-1.0-msvc-x86_64-${Env:GST_VERSION}.exe" -OutFile "D:\gst-pkgs\gstreamer-1.0-msvc-x86_64-${Env:GST_VERSION}.exe"
 
     - name: Install gstreamer
       # Some things to note:
@@ -99,19 +100,11 @@ jobs:
       #   seemingly chosen at random.
       # - We need to export said path to the environment variables so that later steps can use it.
       run: |
-        choco install -y gstreamer gstreamer-devel
-        Import-Module $env:ChocolateyInstall\helpers\chocolateyProfile.psm1
+        & "D:\gst-pkgs\gstreamer-1.0-msvc-x86_64-${Env:GST_VERSION}.exe" /TYPE=devel /ALLUSERS /SILENT /NORESTART /COMPONENTS="${Env:GST_COMPONENTS}"
         refreshenv
         echo "$($Env:GSTREAMER_1_0_ROOT_MSVC_X86_64)bin"
         echo "$($Env:GSTREAMER_1_0_ROOT_MSVC_X86_64)bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
         echo "GSTREAMER_1_0_ROOT_MSVC_X86_64=$Env:GSTREAMER_1_0_ROOT_MSVC_X86_64" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-    - name: Save Chocolatey cache
-      id: choco-cache-save
-      uses: actions/cache/save@v4
-      with:
-        path: ${{ env.CHOCO_TEMP }}
-        key: choco-${{ github.job }}-${{ env.GST_PACKAGE_VERSION }}
 
     - uses: Swatinem/rust-cache@v2
       with:
@@ -161,10 +154,9 @@ jobs:
       with:
         submodules: recursive
 
-    - name: Set deployment target + GStreamer version
+    - name: Set deployment target
       run: |
         echo 'MACOSX_DEPLOYMENT_TARGET=10.12' >> $GITHUB_ENV
-        echo 'GST_VERSION=1.28.6' >> $GITHUB_ENV
 
     - name: Add x86_64 target
       run: |
@@ -185,8 +177,19 @@ jobs:
 
     - name: Setup GStreamer devel
       run: |
-        sudo installer -pkg "gst-pkgs/gstreamer-1.0-${GST_VERSION}-universal.pkg" -target /
-        sudo installer -pkg "gst-pkgs/gstreamer-1.0-devel-${GST_VERSION}-universal.pkg" -target /
+        # Extract choices.xml
+        sudo installer -pkg "gst-pkgs/gstreamer-1.0-${GST_VERSION}-universal.pkg" -target / -showChoicesXML > gst-pkgs/choices_runtime.xml
+        sudo installer -pkg "gst-pkgs/gstreamer-1.0-devel-${GST_VERSION}-universal.pkg" -target / -showChoicesXML > gst-pkgs/choices_devel.xml
+
+        # Patch choices.xml to include the desired list of components
+        cargo xtask macos-gst-components --components "$GST_COMPONENTS" gst-pkgs/choices_runtime.xml
+        cargo xtask macos-gst-components --components "$GST_COMPONENTS" gst-pkgs/choices_devel.xml
+
+        # Install the packages
+        sudo installer -pkg "gst-pkgs/gstreamer-1.0-${GST_VERSION}-universal.pkg" -applyChoiceChangesXML gst-pkgs/choices_runtime.xml -target /
+        sudo installer -pkg "gst-pkgs/gstreamer-1.0-devel-${GST_VERSION}-universal.pkg" -applyChoiceChangesXML gst-pkgs/choices_runtime.xml -target /
+
+        # Set up environment variables
         echo "/Library/Frameworks/GStreamer.framework/Versions/1.0/bin" >> $GITHUB_PATH
         echo 'PKG_CONFIG_PATH="/Library/Frameworks/GStreamer.framework/Versions/1.0/lib/pkgconfig"' >> $GITHUB_ENV
 
