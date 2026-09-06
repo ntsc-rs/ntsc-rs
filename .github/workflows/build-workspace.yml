@@ -91,6 +91,7 @@ jobs:
     - name: Download GStreamer packages
       if: steps.cache-gstreamer.outputs.cache-hit != 'true'
       run: |
+        New-Item -ItemType Directory -Path D:\gst-pkgs
         Invoke-WebRequest -Uri "https://gstreamer.freedesktop.org/data/pkg/windows/${Env:GST_VERSION}/msvc/gstreamer-1.0-msvc-x86_64-${Env:GST_VERSION}.exe" -OutFile "D:\gst-pkgs\gstreamer-1.0-msvc-x86_64-${Env:GST_VERSION}.exe"
 
     - name: Install gstreamer
