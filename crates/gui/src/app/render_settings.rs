@@ -1,7 +1,7 @@
 use std::{ops::RangeInclusive, path::PathBuf};
 
 use gstreamer::{ClockTime, Fraction};
-use ntsc_rs::{NtscEffect, settings::UseField};
+use ntsc_rs::NtscEffect;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,27 +126,6 @@ impl RenderPipelineCodec {
     }
 }
 
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RenderInterlaceMode {
-    #[default]
-    Progressive,
-    TopFieldFirst,
-    BottomFieldFirst,
-}
-
-impl RenderInterlaceMode {
-    pub fn from_use_field(use_field: UseField, enable_interlacing: bool) -> Self {
-        match (
-            use_field.interlaced_output_allowed() && enable_interlacing,
-            use_field,
-        ) {
-            (true, UseField::InterleavedUpper) => RenderInterlaceMode::TopFieldFirst,
-            (true, UseField::InterleavedLower) => RenderInterlaceMode::BottomFieldFirst,
-            _ => RenderInterlaceMode::Progressive,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct StillImageSettings {
     pub framerate: Fraction,
@@ -157,7 +136,7 @@ pub struct StillImageSettings {
 pub struct RenderPipelineSettings {
     pub codec_settings: RenderPipelineCodec,
     pub output_path: PathBuf,
-    pub interlacing: RenderInterlaceMode,
+    pub interlaced_output: bool,
     pub effect_settings: NtscEffect,
 }
 
@@ -169,10 +148,8 @@ impl RenderPipelineSettings {
         Self {
             codec_settings: render_settings.into(),
             output_path: render_settings.output_path.clone(),
-            interlacing: RenderInterlaceMode::from_use_field(
-                effect_settings.use_field,
-                render_settings.interlaced && render_settings.interlaced_output_allowed(),
-            ),
+            interlaced_output: render_settings.interlaced
+                && render_settings.interlaced_output_allowed(),
             effect_settings: effect_settings.clone(),
         }
     }

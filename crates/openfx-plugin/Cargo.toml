@@ -1,6 +1,6 @@
 [package]
 name = "ntsc-rs-openfx-plugin"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 license = "MIT OR ISC OR Apache-2.0"
 repository = "https://github.com/valadaptive/ntsc-rs/tree/main/crates/openfx-plugin"

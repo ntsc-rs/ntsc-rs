@@ -9,6 +9,7 @@ pub struct WindowAndDisplayHandle {
 
 impl WindowAndDisplayHandle {
     /// Safety: The window handle must be valid for however long you intend to use it for
+    #[allow(dead_code)]
     pub unsafe fn new(raw_handle: Win32WindowHandle) -> Self {
         Self { raw_handle }
     }

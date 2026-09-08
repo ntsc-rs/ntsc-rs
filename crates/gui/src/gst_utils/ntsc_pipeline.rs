@@ -1,4 +1,4 @@
-use super::{gstreamer_error::GstreamerError, scale_from_caps};
+use super::{elements, gstreamer_error::GstreamerError, scale_from_caps};
 use gstreamer::{
     ClockTime, Pipeline, element_error, element_warning,
     format::SpecificFormattedValueIntrinsic,
@@ -7,7 +7,7 @@ use gstreamer::{
     query::Duration,
 };
 use gstreamer_pbutils::MissingPluginMessage;
-use gstreamer_video::{VideoCapsBuilder, VideoInterlaceMode};
+use gstreamer_video::VideoInterlaceMode;
 use log::debug;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -252,8 +252,10 @@ impl NtscPipeline {
                                 .build()?;
                             let video_convert =
                                 gstreamer::ElementFactory::make("videoconvert").build()?;
-                            // TODO: Figure out how to make the scale take video orientation into account. Currently, videos
-                            // that get reoriented keep their old scales.
+                            // TODO: Figure out how to make the scale take video orientation into account. Currently,
+                            // videos that get reoriented keep their old scales. Video orientation seems to be a
+                            // metadata "event" rather than part of the caps, so it appears to just be completely
+                            // impossible to determine a video's orientation before it actually plays.
                             /*let video_flip = gstreamer::ElementFactory::make("videoflip")
                             .name("video_flip")
                             .property(
@@ -279,10 +281,6 @@ impl NtscPipeline {
                             let caps_filter = gstreamer::ElementFactory::make("capsfilter")
                                 .name("caps_filter")
                                 .build()?;
-                            let framerate_caps_filter =
-                                gstreamer::ElementFactory::make("capsfilter")
-                                    .name("framerate_caps_filter")
-                                    .build()?;
 
                             let video_elements = &[
                                 &video_queue,
@@ -291,7 +289,6 @@ impl NtscPipeline {
                                 &video_rate,
                                 &video_scale,
                                 &caps_filter,
-                                &framerate_caps_filter,
                             ];
                             pipeline.add_many(video_elements)?;
                             gstreamer::Element::link_many(video_elements)?;
@@ -360,32 +357,23 @@ impl NtscPipeline {
                             }
 
                             if is_still_image {
-                                let image_freeze = gstreamer::ElementFactory::make("imagefreeze")
-                                    .name("still_image_freeze")
-                                    .build()?;
-                                let video_caps = gstreamer_video::VideoCapsBuilder::new()
-                                    .framerate(initial_still_image_framerate)
-                                    .build();
-                                framerate_caps_filter.set_property("caps", video_caps);
+                                let image_freeze: gstreamer::Element =
+                                    glib::Object::builder::<elements::ImageFreeze>()
+                                        .property("name", "still_image_freeze")
+                                        .property("framerate", initial_still_image_framerate)
+                                        .property(
+                                            "duration",
+                                            still_image_duration
+                                                .map(gstreamer::ClockTime::nseconds)
+                                                .unwrap_or(u64::MAX),
+                                        )
+                                        .build()
+                                        .upcast();
 
                                 pipeline.add(&image_freeze)?;
                                 src_pad.link(&image_freeze.static_pad("sink").unwrap())?;
                                 gstreamer::Element::link_many([&image_freeze, &video_queue])?;
                                 image_freeze.sync_state_with_parent()?;
-
-                                // We cannot move this functionality into create_render_job. If we do this seek outside of
-                                // this callback, the output video will be truncated. No idea why.
-                                if let Some(duration) = still_image_duration {
-                                    image_freeze.seek(
-                                        1.0,
-                                        gstreamer::SeekFlags::FLUSH
-                                            | gstreamer::SeekFlags::ACCURATE,
-                                        gstreamer::SeekType::Set,
-                                        gstreamer::ClockTime::ZERO,
-                                        gstreamer::SeekType::Set,
-                                        duration,
-                                    )?;
-                                }
                             } else {
                                 src_pad.link(&sink_pad)?;
                             }
@@ -499,28 +487,22 @@ impl NtscPipeline {
         framerate: gstreamer::Fraction,
     ) -> Result<Option<gstreamer::Fraction>, GstreamerError> {
         let pipeline = &self.inner;
-        let Some(caps_filter) = pipeline.by_name("framerate_caps_filter") else {
+        let Some(image_freeze) = pipeline.by_name("still_image_freeze") else {
             return Ok(None);
         };
 
-        caps_filter.set_property(
-            "caps",
-            VideoCapsBuilder::default().framerate(framerate).build(),
-        );
-        // This seek is necessary to prevent caps negotiation from failing due to race conditions, for some reason.
-        // It seems like in some cases, there would be "tearing" in the caps between different elements, where some
-        // elements' caps would use the old framerate and some would use the new framerate. This would cause caps
-        // negotiation to fail, even though the caps filter sends a "reconfigure" event. This in turn woulc make the
-        // entire pipeline error out.
+        image_freeze.set_property("framerate", framerate);
+
+        // Restart at the current position so a paused pipeline immediately
+        // produces a frame with timestamps based on the new framerate.
         if let Some(seek_pos) = pipeline.query_position::<ClockTime>() {
             pipeline.seek_simple(
                 gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::ACCURATE,
                 seek_pos,
             )?;
-            Ok(Some(framerate))
-        } else {
-            Ok(None)
         }
+
+        Ok(Some(framerate))
     }
 
     pub fn set_volume(&self, volume: f64, mute: bool) {

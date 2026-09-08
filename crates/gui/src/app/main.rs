@@ -12,7 +12,8 @@ use std::{
 
 use blocking::unblock;
 use eframe::egui::{
-    self, Color32, ColorImage, Response, TextureOptions, util::undoer::Undoer, vec2,
+    self, Color32, ColorImage, DroppedFileHandle, Response, TextureOptions, UiBuilder,
+    util::undoer::Undoer, vec2,
 };
 use futures_lite::Future;
 use gstreamer::{ClockTime, Fraction, glib::subclass::types::ObjectSubclassExt, prelude::*};
@@ -64,8 +65,7 @@ use super::{
     render_job::RenderJob,
     render_settings::{
         Ffv1BitDepth, H264Settings, OutputCodec, PngSequenceSettings, PngSettings,
-        RenderInterlaceMode, RenderPipelineCodec, RenderPipelineSettings, RenderSettings,
-        StillImageSettings,
+        RenderPipelineCodec, RenderPipelineSettings, RenderSettings, StillImageSettings,
     },
     system_fonts::system_fallback_fonts,
 };
@@ -518,8 +518,8 @@ impl NtscApp {
 
     fn ensure_single_file_dropped(
         &self,
-        files: Option<Vec<egui::DroppedFile>>,
-    ) -> Option<egui::DroppedFile> {
+        files: Option<Vec<DroppedFileHandle>>,
+    ) -> Option<DroppedFileHandle> {
         files.and_then(|mut files| {
             let file = files.pop()?;
             if !files.is_empty() {
@@ -1006,8 +1006,6 @@ impl NtscApp {
                 collapse_state.openness(ui.ctx()),
             ))
             .show(ui, |ui| {
-                // Prevent buttons in the preset manager from having their outlines cut off
-                ui.visuals_mut().clip_rect_margin = 2.0;
                 let collapse_state = collapse_state.show_header(ui, |ui| {
                     // In order to properly resize the panel when we open the "Presets" header, we need to create the
                     // CollapsingState outside this UI. That means we can't just use a regular CollapsingHeader and must
@@ -1024,7 +1022,9 @@ impl NtscApp {
                 collapse_state.body_unindented(|ui| {
                     if let Some(dropped_presets) = ui.show_dnd_overlay("Drop to install presets") {
                         self.install_presets(
-                            dropped_presets.into_iter().filter_map(|file| file.path),
+                            dropped_presets
+                                .into_iter()
+                                .map(|file| file.path().to_owned()),
                         );
                     }
 
@@ -1033,15 +1033,12 @@ impl NtscApp {
             });
 
         egui::CentralPanel::default().show(ui, |ui| {
-            if let Some(egui::DroppedFile {
-                path: Some(preset_path),
-                ..
-            }) = self.ensure_single_file_dropped(ui.show_dnd_overlay("Drop to load preset"))
+            if let Some(handle) =
+                self.ensure_single_file_dropped(ui.show_dnd_overlay("Drop to load preset"))
             {
-                self.load_preset(preset_path);
+                self.load_preset(handle.path().to_owned());
             }
 
-            ui.visuals_mut().clip_rect_margin = 4.0;
             egui::ScrollArea::vertical()
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
@@ -1529,7 +1526,7 @@ impl NtscApp {
                                     if ui
                                         .add(
                                             egui::DragValue::new(&mut new_framerate)
-                                                .range(0.0..=240.0),
+                                                .range(1.0..=240.0),
                                         )
                                         .changed()
                                     {
@@ -1555,8 +1552,10 @@ impl NtscApp {
                                     if let Some(interlace_mode) = metadata.interlace_mode {
                                         fps_display.push_str(match interlace_mode {
                                             VideoInterlaceMode::Progressive => " (progressive)",
-                                            VideoInterlaceMode::Interleaved => " (interlaced)",
-                                            VideoInterlaceMode::Mixed => " (telecined)",
+                                            // I had hoped that `Mixed` meant "telecined", but it seems that
+                                            // plain-interleaved H.264 videos are `Mixed` too.
+                                            VideoInterlaceMode::Interleaved
+                                            | VideoInterlaceMode::Mixed => " (interlaced)",
                                             _ => "",
                                         });
                                     }
@@ -1625,7 +1624,7 @@ impl NtscApp {
                                                 settings: Default::default(),
                                             }),
                                             output_path: handle.into(),
-                                            interlacing: RenderInterlaceMode::Progressive,
+                                            interlaced_output: false,
                                             effect_settings: app.effect_settings.clone(),
                                         },
                                     );
@@ -1867,7 +1866,6 @@ impl NtscApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(0.0))
             .show(ui, |ui| {
-                ui.visuals_mut().clip_rect_margin = 0.0;
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     if let Some(info) = &mut self.pipeline {
                         let mut timecode = info.last_seek_pos.nseconds();
@@ -1892,13 +1890,10 @@ impl NtscApp {
                     egui::ScrollArea::both()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
-                            if let Some(egui::DroppedFile {
-                                path: Some(dropped_media_path),
-                                ..
-                            }) = self.ensure_single_file_dropped(
+                            if let Some(media) = self.ensure_single_file_dropped(
                                 ui.show_dnd_overlay("Drop to load media"),
                             ) {
-                                let res = self.load_video(ui.ctx(), dropped_media_path);
+                                let res = self.load_video(ui.ctx(), media.path().to_owned());
                                 self.handle_result(res);
                             }
                             ui.with_layout(
@@ -2291,11 +2286,12 @@ impl NtscApp {
             .resizable(true)
             .default_size(425.0)
             .size_range(300.0..=800.0)
-            .show(ui, |ui| {
-                ui.visuals_mut().clip_rect_margin = 0.0;
+            .show(ui, |parent_ui| {
+                let mut ui = parent_ui.new_child(UiBuilder::new());
+
                 egui::Panel::top("left_tabs")
-                    .interact_height(ui)
-                    .show(ui, |ui| {
+                    .interact_height(&ui)
+                    .show(&mut ui, |ui| {
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                             ui.selectable_value(
                                 &mut self.left_panel_state,
@@ -2312,7 +2308,7 @@ impl NtscApp {
 
                 egui::CentralPanel::default()
                     .frame(egui::Frame::central_panel(ui.style()).inner_margin(0.0))
-                    .show(ui, |ui| match self.left_panel_state {
+                    .show(&mut ui, |ui| match self.left_panel_state {
                         LeftPanelState::EffectSettings => {
                             self.show_effect_settings(ui, frame);
                         }
@@ -2320,12 +2316,16 @@ impl NtscApp {
                             self.show_render_settings(ui, frame);
                         }
                     });
+
+                // Take up exactly as much space as the resizable panel thinks. There are some really annoying egui bugs
+                // in this area that the maintainer repeatedly claims to have fixed
+                // (https://github.com/ntsc-rs/ntsc-rs/issues/780, https://github.com/emilk/egui/pull/8198).
+                parent_ui.advance_cursor_after_rect(parent_ui.available_rect_before_wrap());
             });
 
         egui::CentralPanel::default()
             .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(0.0))
             .show(ui, |ui| {
-                ui.visuals_mut().clip_rect_margin = 0.0;
                 self.show_video_pane(ui, frame);
             });
     }

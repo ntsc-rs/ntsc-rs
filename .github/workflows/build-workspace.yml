@@ -11,6 +11,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  GST_VERSION: 1.28.6
+  # Which GStreamer components should we include in the bundles?
+  # The components are defined in cerbero (see https://gitlab.freedesktop.org/gstreamer/cerbero/-/tree/main/packages).
+  # Compared to the default set, we disable `effects`, `net`, `visualizers`, `analytics`, and `qt5`/`qt6`; and enable `codecs-gpl`, `codecs-gpl-restricted`, and `libav`.
+  GST_COMPONENTS: gstreamer-1.0-core,gstreamer-1.0-system,gstreamer-1.0-playback,gstreamer-1.0-codecs,gstreamer-1.0-codecs-gpl,gstreamer-1.0-codecs-restricted,gstreamer-1.0-codecs-gpl-restricted,gstreamer-1.0-libav
 
 jobs:
   build-linux:
@@ -18,7 +23,7 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         submodules: recursive
 
@@ -41,7 +46,7 @@ jobs:
       run: cargo xtask build-ofx-plugin --release
 
     - name: Archive Linux OpenFX plugin
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       if: ${{ github.ref_type == 'tag' }}
       with:
         name: ntsc-rs-linux-openfx
@@ -54,7 +59,7 @@ jobs:
         cp target/release/ntsc-rs-cli ntsc-rs-linux-standalone
 
     - name: Archive Linux binary
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       if: ${{ github.ref_type == 'tag' }}
       with:
         name: ntsc-rs-linux-standalone
@@ -65,7 +70,7 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         submodules: recursive
 
@@ -76,21 +81,18 @@ jobs:
       run: |
         Copy-Item -Path "${{ github.workspace }}" -Destination "${{ env.FAST_WORKSPACE }}" -Recurse
 
-      # Put the Chocolatey temp directory in a place where we can use the cache action to save and restore it.
-    - name: Set Chocolatey temp directory
-      run: |
-        choco config set cacheLocation --value "D:\chocolatey_cache"
-        echo "CHOCO_TEMP=D:\chocolatey_cache" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
-
-    - name: Get current GStreamer package version
-      run: echo "GST_PACKAGE_VERSION=$(choco info -y --limit-output gstreamer)" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
-
-    - name: Restore Chocolatey cache
-      id: choco-cache-restore
-      uses: actions/cache/restore@v4
+    - name: Cache GStreamer packages
+      id: cache-gstreamer
+      uses: actions/cache@v6
       with:
-        path: ${{ env.CHOCO_TEMP }}
-        key: choco-${{ github.job }}-${{ env.GST_PACKAGE_VERSION }}
+        path: D:\gst-pkgs
+        key: ${{ env.GST_VERSION }}-pkgs
+
+    - name: Download GStreamer packages
+      if: steps.cache-gstreamer.outputs.cache-hit != 'true'
+      run: |
+        New-Item -ItemType Directory -Path D:\gst-pkgs
+        Invoke-WebRequest -Uri "https://gstreamer.freedesktop.org/data/pkg/windows/${Env:GST_VERSION}/msvc/gstreamer-1.0-msvc-x86_64-${Env:GST_VERSION}.exe" -OutFile "D:\gst-pkgs\gstreamer-1.0-msvc-x86_64-${Env:GST_VERSION}.exe"
 
     - name: Install gstreamer
       # Some things to note:
@@ -99,19 +101,57 @@ jobs:
       #   seemingly chosen at random.
       # - We need to export said path to the environment variables so that later steps can use it.
       run: |
-        choco install -y gstreamer gstreamer-devel
         Import-Module $env:ChocolateyInstall\helpers\chocolateyProfile.psm1
-        refreshenv
-        echo "$($Env:GSTREAMER_1_0_ROOT_MSVC_X86_64)bin"
-        echo "$($Env:GSTREAMER_1_0_ROOT_MSVC_X86_64)bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-        echo "GSTREAMER_1_0_ROOT_MSVC_X86_64=$Env:GSTREAMER_1_0_ROOT_MSVC_X86_64" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-    - name: Save Chocolatey cache
-      id: choco-cache-save
-      uses: actions/cache/save@v4
-      with:
-        path: ${{ env.CHOCO_TEMP }}
-        key: choco-${{ github.job }}-${{ env.GST_PACKAGE_VERSION }}
+        # The Inno Setup component IDs differ from the Cerbero package names in
+        # GST_COMPONENTS. Select both halves of each package because the import
+        # libraries and headers are in `/devel`, while the DLLs are in `/runtime`.
+        # The base packages are transitive dependencies but Inno Setup does not
+        # automatically select their development components.
+        $packageNames = @("base-system-1.0", "base-crypto") + ($Env:GST_COMPONENTS -split ',')
+        $innoComponents = foreach ($packageName in $packageNames) {
+          $component = $packageName -replace '[-./ @+]', '_'
+          $component
+          "$component/runtime"
+          "$component/devel"
+        }
+        $componentArgument = "/COMPONENTS=$($innoComponents -join ',')"
+        Write-Host $componentArgument
+
+        $installerPath = "D:\gst-pkgs\gstreamer-1.0-msvc-x86_64-${Env:GST_VERSION}.exe"
+        $installerLog = "D:\gst-pkgs\install.log"
+        $installerArguments = @(
+          "/TYPE=custom"
+          "/ALLUSERS"
+          "/SILENT"
+          "/NORESTART"
+          $componentArgument
+          "/LOG=$installerLog"
+        )
+        $installerProcess = Start-Process -FilePath $installerPath -ArgumentList $installerArguments -Wait -PassThru
+        if ($installerProcess.ExitCode -ne 0) {
+          if (Test-Path $installerLog) { Get-Content $installerLog }
+          throw "GStreamer installer exited with code $($installerProcess.ExitCode)"
+        }
+
+        refreshenv
+        $gstRoot = $Env:GSTREAMER_1_0_ROOT_MSVC_X86_64
+        if ([string]::IsNullOrWhiteSpace($gstRoot)) {
+          if (Test-Path $installerLog) { Get-Content $installerLog }
+          throw "GStreamer installer did not set GSTREAMER_1_0_ROOT_MSVC_X86_64"
+        }
+        $gstBin = Join-Path $gstRoot "bin"
+        $gstPkgConfig = Join-Path $gstRoot "lib\pkgconfig"
+        $gstPbutilsLib = Join-Path $gstRoot "lib\gstpbutils-1.0.lib"
+        if (!(Test-Path $gstPbutilsLib)) {
+          if (Test-Path $installerLog) { Get-Content $installerLog }
+          throw "GStreamer development library was not installed: $gstPbutilsLib"
+        }
+
+        echo $gstBin
+        echo $gstBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        echo "GSTREAMER_1_0_ROOT_MSVC_X86_64=$gstRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        echo "PKG_CONFIG_PATH=$gstPkgConfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
     - uses: Swatinem/rust-cache@v2
       with:
@@ -132,49 +172,74 @@ jobs:
       working-directory: ${{ env.FAST_WORKSPACE }}
 
     - name: Archive Windows binary
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       if: ${{ github.ref_type == 'tag' }}
       with:
         name: ntsc-rs-windows-standalone
         path: ${{ env.FAST_WORKSPACE }}/build/ntsc-rs-windows-standalone
 
     - name: Archive Windows After Effects plugin
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       if: ${{ github.ref_type == 'tag' }}
       with:
         name: ntsc-rs-windows-afterfx
         path: ${{ env.FAST_WORKSPACE }}/ntsc-rs-ae.aex
 
     - name: Archive Windows OpenFX plugin
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       if: ${{ github.ref_type == 'tag' }}
       with:
         name: ntsc-rs-windows-openfx
         path: ${{ env.FAST_WORKSPACE }}/crates/openfx-plugin/build/
 
   build-macos:
-    runs-on: macos-14
+    runs-on: macos-26
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         submodules: recursive
 
     - name: Set deployment target
-      run: echo 'MACOSX_DEPLOYMENT_TARGET=10.12' >> $GITHUB_ENV
+      run: |
+        echo 'MACOSX_DEPLOYMENT_TARGET=10.12' >> $GITHUB_ENV
 
     - name: Add x86_64 target
       run: |
         rustup target add x86_64-apple-darwin
 
-    - name: Install packages
+    - name: Cache GStreamer packages
+      id: cache-gstreamer
+      uses: actions/cache@v6
+      with:
+        path: gst-pkgs
+        key: ${{ env.GST_VERSION }}-pkgs
+
+    - name: Download GStreamer packages
+      if: steps.cache-gstreamer.outputs.cache-hit != 'true'
       run: |
-        brew install --cask gstreamer-runtime
-        brew install --cask gstreamer-development
+        curl --create-dirs --output-dir gst-pkgs --fail --location -O "https://gstreamer.freedesktop.org/data/pkg/osx/${GST_VERSION}/gstreamer-1.0-${GST_VERSION}-universal.pkg"
+        curl --create-dirs --output-dir gst-pkgs --fail --location -O "https://gstreamer.freedesktop.org/data/pkg/osx/${GST_VERSION}/gstreamer-1.0-devel-${GST_VERSION}-universal.pkg"
 
     - name: Setup GStreamer devel
       run: |
+        # Extract choices.xml.
+        sudo installer -pkg "gst-pkgs/gstreamer-1.0-${GST_VERSION}-universal.pkg" -target / -showChoiceChangesXML > gst-pkgs/choices_runtime.xml
+        sudo installer -pkg "gst-pkgs/gstreamer-1.0-devel-${GST_VERSION}-universal.pkg" -target / -showChoiceChangesXML > gst-pkgs/choices_devel.xml
+
+        cat gst-pkgs/choices_runtime.xml
+        cat gst-pkgs/choices_devel.xml
+
+        # Patch choices.xml to include the desired list of components
+        cargo xtask macos-gst-components --components "$GST_COMPONENTS" gst-pkgs/choices_runtime.xml
+        cargo xtask macos-gst-components --components "$GST_COMPONENTS" gst-pkgs/choices_devel.xml
+
+        # Install the packages
+        sudo installer -pkg "gst-pkgs/gstreamer-1.0-${GST_VERSION}-universal.pkg" -applyChoiceChangesXML gst-pkgs/choices_runtime.xml -target /
+        sudo installer -pkg "gst-pkgs/gstreamer-1.0-devel-${GST_VERSION}-universal.pkg" -applyChoiceChangesXML gst-pkgs/choices_devel.xml -target /
+
+        # Set up environment variables
         echo "/Library/Frameworks/GStreamer.framework/Versions/1.0/bin" >> $GITHUB_PATH
         echo 'PKG_CONFIG_PATH="/Library/Frameworks/GStreamer.framework/Versions/1.0/lib/pkgconfig"' >> $GITHUB_ENV
 
@@ -199,7 +264,7 @@ jobs:
         pkgbuild --install-location "/Library/Application Support/Adobe/Common/Plug-ins/7.0/MediaCore" --component build/ntsc-rs-afterfx/ntsc-rs.plugin --min-os-version $MACOSX_DEPLOYMENT_TARGET --scripts assets/install_scripts --compression latest build/ntsc-rs-macos-afterfx.pkg
 
     - name: Archive .pkg installers
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       if: ${{ github.ref_type == 'tag' }}
       with:
         name: ntsc-rs-macos
@@ -219,10 +284,10 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
 
     - name: Download artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v7
       with:
         path: ./artifacts
 
