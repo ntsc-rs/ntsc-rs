@@ -544,7 +544,7 @@ impl EffectCtx {
         if height == 1
             && matches!(
                 filter_mode,
-                ChromaDemodulationFilter::OneLineComb | ChromaDemodulationFilter::TwoLineComb
+                ChromaDemodulationFilter::OneLineComb | ChromaDemodulationFilter::TwoLineComb | ChromaDemodulationFilter::AdaptiveComb
             )
         {
             filter_mode = ChromaDemodulationFilter::Notch;
@@ -598,10 +598,41 @@ impl EffectCtx {
                 );
             }
             ChromaDemodulationFilter::TwoLineComb => {
+                let lines = ZipChunks::new([yiq.y, yiq.i, yiq.q], width);
+                lines.par_for_each(|line_index, [y, i, q]| {
+                    // For the first line, both prev_line and next_line point to the second line. This effectively makes
+                    // it a one-line comb filter for that line. See the comment above in the one-line comb filter for
+                    // why we do this.
+                    let prev_index = if line_index == 0 { 1 } else { line_index - 1 };
+
+                    // Similar for the last line.
+                    let next_index = if line_index == height - 1 {
+                        height - 2
+                    } else {
+                        line_index + 1
+                    };
+
+                    let prev_line = &modulated[prev_index * width..(prev_index + 1) * width];
+                    let cur_line = &modulated[line_index * width..(line_index + 1) * width];
+                    let next_line = &modulated[next_index * width..(next_index + 1) * width];
+
+                    for sample_index in 0..width {
+                        let cur_sample = cur_line[sample_index];
+                        let blended = (cur_sample * 0.5)
+                            + (prev_line[sample_index] * 0.25)
+                            + (next_line[sample_index] * 0.25);
+                        y[sample_index] = blended;
+                    }
+
+                    let xi = self.chroma_phase_shift(phase_shift, phase_offset, line_index * 2);
+                    self.demodulate_chroma_line(y, i, q, cur_line, xi);
+                });
+            }
+            ChromaDemodulationFilter::AdaptiveComb => {
             	let mut y_notch = yiq.y.to_vec();
             	let notch_filter: TransferFunction = make_notch_filter(0.5, 2.0);
             	self.filter_plane(&mut y_notch, width, &notch_filter, InitialCondition::Zero, 0);
-            	
+
                 let lines = ZipChunks::new([yiq.y, yiq.i, yiq.q], width);
                 lines.par_for_each(|line_index, [y, i, q]| {
                     // For the first line, both prev_line and next_line point to the second line. This effectively makes

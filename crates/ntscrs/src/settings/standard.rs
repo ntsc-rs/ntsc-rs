@@ -184,6 +184,7 @@ pub enum ChromaDemodulationFilter {
     Notch,
     OneLineComb,
     TwoLineComb,
+    AdaptiveComb,
 }
 impl SettingsEnum for ChromaDemodulationFilter {}
 
@@ -708,6 +709,15 @@ impl Settings for NtscEffect {
                                  the scanline phase shift is 180 degrees.",
                             ),
                             index: ChromaDemodulationFilter::TwoLineComb as u32,
+                        },
+                        MenuItem {
+                            label: "Adaptive comb",
+                            description: Some(
+                                "Average the current row with the previous and next ones, \
+                                 phase-cancelling the chrominance signals. Only works if the \
+                                 scanline phase shift is 180 degrees.",
+                            ),
+                            index: ChromaDemodulationFilter::AdaptiveComb as u32,
                         },
                     ],
                 },
