@@ -8,10 +8,19 @@ use crate::gst_utils::{gstreamer_error::GstreamerError, ntsc_pipeline::VideoScal
 
 use super::error::{ApplicationError, GstreamerInitSnafu};
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct VideoZoom {
     pub scale: f64,
     pub fit: bool,
+}
+
+impl Default for VideoZoom {
+    fn default() -> Self {
+        Self {
+            scale: 1.0,
+            fit: true,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -29,7 +38,7 @@ impl Default for VideoScaleState {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AudioVolume {
     pub gain: f64,
     // If the user drags the volume slider all the way to 0, we want to keep track of what it was before they did that
@@ -40,7 +49,7 @@ pub struct AudioVolume {
     pub mute: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 pub enum EffectPreviewMode {
     #[default]
     Enabled,
@@ -48,7 +57,7 @@ pub enum EffectPreviewMode {
     SplitScreen,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct EffectPreviewSettings {
     pub mode: EffectPreviewMode,
     pub preview_rect: Rect,

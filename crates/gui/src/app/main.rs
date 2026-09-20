@@ -18,6 +18,7 @@ use eframe::egui::{
 use futures_lite::Future;
 use gstreamer::{ClockTime, Fraction, glib::subclass::types::ObjectSubclassExt, prelude::*};
 use gstreamer_video::VideoInterlaceMode;
+use serde::de::DeserializeOwned;
 
 use crate::{
     app::update_dialog::UpdateDialogState,
@@ -115,39 +116,57 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     Ok(eframe::run_native(
         NtscApp::APP_ID,
         options,
-        Box::new(|cc| {
-            let ctx = cc.egui_ctx.clone();
-            // Load fonts and GStreamer in separate threads. Cascade the JoinHandles.
-            let fonts_thread_handle = {
-                let ctx = ctx.clone();
-                thread::spawn(move || {
-                    debug!("Loading fonts");
-                    for font in system_fallback_fonts() {
-                        ctx.add_font(font);
-                    }
-                    debug!("Loaded fonts");
-                })
-            };
-            let handle = thread::spawn(move || {
-                // GStreamer can be slow to initialize (on the order of minutes). Do it off-thread so we can display a
-                // loading screen in the meantime. Thanks for being thread-safe, unlike GTK!
-                debug!("Loading GStreamer");
-                let init_result = initialize_gstreamer();
-                debug!("Loaded GStreamer");
-                fonts_thread_handle.join().unwrap();
-                init_result
-            });
-            let init_state = GstreamerInitState::Initializing(Some(handle));
+        Box::new(|cc| Ok(Box::new(NtscApp::new(cc)))),
+    )?)
+}
 
-            let settings_list = SettingsList::<NtscEffect>::new();
-            let settings_list_easy = SettingsList::<EasyMode>::new();
-            let (
-                settings,
-                easy_mode_settings,
-                mut easy_mode_enabled,
-                render_settings,
-                scale_settings,
-            ) = if let Some(storage) = cc.storage {
+impl NtscApp {
+    pub const APP_ID: &'static str = "ntsc-rs";
+
+    fn new(cc: &eframe::CreationContext) -> Self {
+        let ctx = cc.egui_ctx.clone();
+        // Load fonts and GStreamer in separate threads. Cascade the JoinHandles.
+        let fonts_thread_handle = {
+            let ctx = ctx.clone();
+            thread::spawn(move || {
+                debug!("Loading fonts");
+                for font in system_fallback_fonts() {
+                    ctx.add_font(font);
+                }
+                debug!("Loaded fonts");
+            })
+        };
+        let handle = thread::spawn(move || {
+            // GStreamer can be slow to initialize (on the order of minutes). Do it off-thread so we can display a
+            // loading screen in the meantime. Thanks for being thread-safe, unlike GTK!
+            debug!("Loading GStreamer");
+            let init_result = initialize_gstreamer();
+            debug!("Loaded GStreamer");
+            fonts_thread_handle.join().unwrap();
+            init_result
+        });
+        let gstreamer_init = GstreamerInitState::Initializing(Some(handle));
+
+        let settings_list = SettingsList::<NtscEffect>::new();
+        let settings_list_easy = SettingsList::<EasyMode>::new();
+
+        fn get_value<T: Default + DeserializeOwned>(
+            storage: Option<&dyn eframe::Storage>,
+            key: &str,
+        ) -> T {
+            storage
+                .and_then(|storage| eframe::get_value::<T>(storage, key))
+                .unwrap_or_default()
+        }
+
+        let render_settings = get_value::<RenderSettings>(cc.storage, "render_settings");
+        let scale_settings = get_value::<VideoScaleState>(cc.storage, "scale_settings");
+        let zoom_settings = get_value::<VideoZoom>(cc.storage, "zoom_settings");
+        let volume_settings = get_value::<AudioVolume>(cc.storage, "volume_settings");
+        let preview_settings = get_value::<EffectPreviewSettings>(cc.storage, "preview_settings");
+
+        let (effect_settings, easy_mode_settings, mut easy_mode_enabled) =
+            if let Some(storage) = cc.storage {
                 // Load previous effect settings from storage
                 let settings = storage
                     .get_string("effect_settings")
@@ -163,62 +182,15 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     .get_string("easy_mode_enabled")
                     .map(|saved_enabled| saved_enabled == "true")
                     .unwrap_or_default();
-                let render_settings =
-                    eframe::get_value::<RenderSettings>(storage, "render_settings")
-                        .unwrap_or_default();
-                let scale_settings =
-                    eframe::get_value::<VideoScaleState>(storage, "scale_settings")
-                        .unwrap_or_default();
-
-                (
-                    settings,
-                    easy_mode_settings,
-                    easy_mode_enabled,
-                    render_settings,
-                    scale_settings,
-                )
+                (settings, easy_mode_settings, easy_mode_enabled)
             } else {
-                (
-                    NtscEffect::default(),
-                    EasyMode::default(),
-                    true,
-                    RenderSettings::default(),
-                    VideoScaleState::default(),
-                )
+                (NtscEffect::default(), EasyMode::default(), true)
             };
 
-            easy_mode_enabled &= EXPERIMENTAL_EASY_MODE;
+        easy_mode_enabled &= EXPERIMENTAL_EASY_MODE;
 
-            ctx.global_style_mut(|style| style.interaction.tooltip_delay = 0.5);
-            Ok(Box::new(NtscApp::new(
-                ctx,
-                settings_list,
-                settings_list_easy,
-                settings,
-                easy_mode_settings,
-                easy_mode_enabled,
-                render_settings,
-                scale_settings,
-                init_state,
-            )))
-        }),
-    )?)
-}
+        ctx.global_style_mut(|style| style.interaction.tooltip_delay = 0.5);
 
-impl NtscApp {
-    pub const APP_ID: &'static str = "ntsc-rs";
-
-    fn new(
-        ctx: egui::Context,
-        settings_list: SettingsList<NtscEffect>,
-        settings_list_easy: SettingsList<EasyMode>,
-        effect_settings: NtscEffect,
-        easy_mode_settings: EasyMode,
-        easy_mode_enabled: bool,
-        render_settings: RenderSettings,
-        scale_settings: VideoScaleState,
-        gstreamer_init: GstreamerInitState,
-    ) -> Self {
         Self {
             gstreamer_init,
             settings_list,
@@ -226,13 +198,10 @@ impl NtscApp {
             pipeline: None,
             undoer: Undoer::default(),
             executor: AppExecutor::new(ctx.clone()),
-            video_zoom: VideoZoom {
-                scale: 1.0,
-                fit: true,
-            },
+            video_zoom: zoom_settings,
             video_scale: scale_settings,
-            audio_volume: AudioVolume::default(),
-            effect_preview: EffectPreviewSettings::default(),
+            audio_volume: volume_settings,
+            effect_preview: preview_settings,
             left_panel_state: LeftPanelState::default(),
             easy_mode_enabled,
             effect_settings,
@@ -2436,5 +2405,8 @@ impl eframe::App for NtscApp {
 
         eframe::set_value(storage, "render_settings", &self.render_settings);
         eframe::set_value(storage, "scale_settings", &self.video_scale);
+        eframe::set_value(storage, "zoom_settings", &self.video_zoom);
+        eframe::set_value(storage, "volume_settings", &self.audio_volume);
+        eframe::set_value(storage, "preview_settings", &self.effect_preview);
     }
 }
