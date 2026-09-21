@@ -40,10 +40,9 @@ pub fn simplex_1d<S: Simd>(point: [S::f32s; 1], seed: i32) -> S::f32s {
 #[inline(always)]
 fn gradient_1d<S: Simd>(hash: S::u32s) -> S::f32s {
     let h = hash >> 28;
-    let v = ((h & 7) + 1).to_float::<S::f32s>();
+    let v = ((h & 7) + 1).bitcast::<S::i32s>().to_float::<S::f32s>();
 
-    let h_and_8 = (h & 8).simd_eq(S::u32s::splat(hash.witness(), 0));
-    h_and_8.select(v, -v)
+    (v.bitcast::<S::u32s>() | (hash & (1 << 31))).bitcast::<S::f32s>()
 }
 
 #[inline(always)]
