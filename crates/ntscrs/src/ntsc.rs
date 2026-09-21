@@ -338,25 +338,57 @@ impl EffectCtx {
 
     /// Modulate the chrominance signal (I and Q planes) into the Y (luminance) plane.
     /// TODO: Make the chroma carrier's frequency/sample rate configurable.
-    fn chroma_into_luma(&self, yiq: &mut YiqView) {
+    #[inline(always)]
+    fn chroma_into_luma<S: Simd>(&self, simd: S, yiq: &mut YiqView) {
         let width = yiq.dimensions.0;
 
         let yiq_lines = ZipChunks::new([yiq.y, yiq.i, yiq.q], width);
+        const I_MULT: [f32; 4] = [1.0, 0.0, -1.0, 0.0];
+        const Q_MULT: [f32; 4] = [0.0, 1.0, 0.0, -1.0];
 
         yiq_lines.par_for_each(|index, [y, i, q]| {
-            const I_MULT: [f32; 4] = [1.0, 0.0, -1.0, 0.0];
-            const Q_MULT: [f32; 4] = [0.0, 1.0, 0.0, -1.0];
-            let xi = self.chroma_phase_shift(index);
+            simd.vectorize(
+                #[inline(always)]
+                || {
+                    let xi = self.chroma_phase_shift(index);
+                    let offset_wave = |offset: usize| {
+                        S::f32s::from_fn(simd, |i| {
+                            let ii = offset + i;
 
-            y.iter_mut()
-                .zip(i.iter_mut().zip(q))
-                .enumerate()
-                .for_each(|(index, (y, (i, q)))| {
-                    let phase = (index + xi) & 3;
-                    *y += *i * I_MULT[phase] + *q * Q_MULT[phase];
-                    // *i = 0.0;
-                    // *q = 0.0;
-                });
+                            let sign = if ii & 2 == 0 { 1.0 } else { -1.0 };
+                            let mag = if ii & 1 == 0 { 1.0 } else { 0.0 };
+                            sign * mag
+                        })
+                    };
+
+                    let i_mult = offset_wave(xi);
+                    let q_mult = offset_wave(xi + 3);
+                    let mut y_chunks = y.chunks_exact_mut(S::f32s::N);
+                    let mut i_chunks = i.chunks_exact(S::f32s::N);
+                    let mut q_chunks = q.chunks_exact(S::f32s::N);
+                    for (y_chunk, (i, q)) in y_chunks
+                        .by_ref()
+                        .zip(i_chunks.by_ref().zip(q_chunks.by_ref()))
+                    {
+                        let mut y = S::f32s::from_slice(simd, y_chunk);
+                        let i = S::f32s::from_slice(simd, i);
+                        let q = S::f32s::from_slice(simd, q);
+
+                        y += (i * i_mult) + (q * q_mult);
+                        y.store_slice(y_chunk);
+                    }
+
+                    for (index, (y, (&i, &q))) in y_chunks
+                        .into_remainder()
+                        .iter_mut()
+                        .zip(i_chunks.remainder().iter().zip(q_chunks.remainder()))
+                        .enumerate()
+                    {
+                        let phase = (index + xi) & 3;
+                        *y += i * I_MULT[phase] + q * Q_MULT[phase];
+                    }
+                },
+            )
         });
     }
 
@@ -1398,7 +1430,7 @@ impl NtscEffect {
             ChromaLowpass::None => {}
         };
 
-        ctx.chroma_into_luma(yiq);
+        dispatch!(ctx.level, simd => ctx.chroma_into_luma(simd, yiq));
 
         if self.composite_sharpening != 0.0 {
             let preemphasis_filter = make_lowpass(
