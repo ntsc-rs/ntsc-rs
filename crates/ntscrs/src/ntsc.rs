@@ -332,50 +332,31 @@ impl EffectCtx {
     }
 
     /// Calculate the chroma subcarrier phase for a given row/field.
-    fn chroma_phase_shift(
-        &self,
-        scanline_phase_shift: PhaseShift,
-        offset: i32,
-        line_num: usize,
-    ) -> usize {
-        match scanline_phase_shift {
-            PhaseShift::Degrees90 | PhaseShift::Degrees270 => {
-                ((self.frame_num as i32 + offset + ((line_num as i32) >> 1)) & 3) as usize
-            }
-            PhaseShift::Degrees180 => {
-                ((((self.frame_num + line_num) & 2) as i32 + offset) & 3) as usize
-            }
-            PhaseShift::Degrees0 => 0,
-        }
-    }
-
-    /// Modulate a single line of the chrominance signal into the luminance signal.
-    fn chroma_into_luma_line(y: &mut [f32], i: &mut [f32], q: &mut [f32], xi: usize) {
-        const I_MULT: [f32; 4] = [1.0, 0.0, -1.0, 0.0];
-        const Q_MULT: [f32; 4] = [0.0, 1.0, 0.0, -1.0];
-
-        y.iter_mut()
-            .zip(i.iter_mut().zip(q))
-            .enumerate()
-            .for_each(|(index, (y, (i, q)))| {
-                let phase = (index + (xi & 3)) & 3;
-                *y += *i * I_MULT[phase] + *q * Q_MULT[phase];
-                // *i = 0.0;
-                // *q = 0.0;
-            });
+    fn chroma_phase_shift(&self, line_index: usize) -> usize {
+        (self.frame_num + (line_index << 1)) & 2
     }
 
     /// Modulate the chrominance signal (I and Q planes) into the Y (luminance) plane.
     /// TODO: Make the chroma carrier's frequency/sample rate configurable.
-    fn chroma_into_luma(&self, yiq: &mut YiqView, phase_shift: PhaseShift, phase_offset: i32) {
+    fn chroma_into_luma(&self, yiq: &mut YiqView) {
         let width = yiq.dimensions.0;
 
         let yiq_lines = ZipChunks::new([yiq.y, yiq.i, yiq.q], width);
 
         yiq_lines.par_for_each(|index, [y, i, q]| {
-            let xi = self.chroma_phase_shift(phase_shift, phase_offset, index * 2);
+            const I_MULT: [f32; 4] = [1.0, 0.0, -1.0, 0.0];
+            const Q_MULT: [f32; 4] = [0.0, 1.0, 0.0, -1.0];
+            let xi = self.chroma_phase_shift(index);
 
-            Self::chroma_into_luma_line(y, i, q, xi);
+            y.iter_mut()
+                .zip(i.iter_mut().zip(q))
+                .enumerate()
+                .for_each(|(index, (y, (i, q)))| {
+                    let phase = (index + xi) & 3;
+                    *y += *i * I_MULT[phase] + *q * Q_MULT[phase];
+                    // *i = 0.0;
+                    // *q = 0.0;
+                });
         });
     }
 
@@ -389,7 +370,7 @@ impl EffectCtx {
         i: &mut [f32],
         q: &mut [f32],
         modulated: &[f32],
-        xi: usize,
+        line_index: usize,
     ) {
         assert_eq!(y.len(), modulated.len());
         assert_eq!(y.len(), i.len());
@@ -405,6 +386,7 @@ impl EffectCtx {
                 sign * mag
             })
         };
+        let xi = self.chroma_phase_shift(line_index);
         let i_mult_inv_l = offset_wave(xi) * 0.5;
         let i_mult_inv_c = offset_wave(1 + xi);
         let i_mult_inv_r = offset_wave(2 + xi) * 0.5;
@@ -473,7 +455,7 @@ impl EffectCtx {
         i: &mut [f32],
         q: &mut [f32],
         modulated: &[f32],
-        xi: usize,
+        line_index: usize,
     ) {
         let width = y.len();
         for index in 0..width {
@@ -488,16 +470,11 @@ impl EffectCtx {
             ];
             y[index] = area.iter().sum::<f32>() * 0.25;
         }
-        dispatch!(self.level, simd => self.demodulate_chroma_line(simd, y, i, q, modulated, xi));
+        dispatch!(self.level, simd => self.demodulate_chroma_line(simd, y, i, q, modulated, line_index));
     }
 
     /// Demodulate the chroma with a 1-line comb filter.
-    fn luma_into_chroma_comb1(
-        &self,
-        yiq: &mut YiqView,
-        phase_shift: PhaseShift,
-        phase_offset: i32,
-    ) {
+    fn luma_into_chroma_comb1(&self, yiq: &mut YiqView) {
         let width = yiq.dimensions.0;
         let modulated = &mut yiq.scratch;
         // Demodulate the Y (luma) by averaging successive lines of the modulated signal
@@ -517,18 +494,12 @@ impl EffectCtx {
             }
 
             // Demodulate the chroma
-            let xi = self.chroma_phase_shift(phase_shift, phase_offset, line_index * 2);
-            dispatch!(self.level, simd => self.demodulate_chroma_line(simd, y, i, q, bottom_line, xi));
+            dispatch!(self.level, simd => self.demodulate_chroma_line(simd, y, i, q, bottom_line, line_index));
         });
     }
 
     /// Demodulate the chroma with a 2-line comb filter.
-    fn luma_into_chroma_comb2(
-        &self,
-        yiq: &mut YiqView,
-        phase_shift: PhaseShift,
-        phase_offset: i32,
-    ) {
+    fn luma_into_chroma_comb2(&self, yiq: &mut YiqView) {
         let width = yiq.dimensions.0;
         let height = yiq.num_rows();
         let modulated = &mut *yiq.scratch;
@@ -557,20 +528,13 @@ impl EffectCtx {
                 y[sample_index] = blended;
             }
 
-            let xi = self.chroma_phase_shift(phase_shift, phase_offset, line_index * 2);
-            dispatch!(self.level, simd => self.demodulate_chroma_line(simd, y, i, q, cur_line, xi));
+            dispatch!(self.level, simd => self.demodulate_chroma_line(simd, y, i, q, cur_line, line_index));
         });
     }
 
     /// Demodulate the chroma with a 2D FIR filter.
     #[inline(always)]
-    fn luma_into_chroma_2d<S: Simd>(
-        &self,
-        simd: S,
-        yiq: &mut YiqView,
-        phase_shift: PhaseShift,
-        phase_offset: i32,
-    ) {
+    fn luma_into_chroma_2d<S: Simd>(&self, simd: S, yiq: &mut YiqView) {
         // Weight for diagonally-adjacent pixels / sharpening amount. Useful range is 0.0625-0.125.
         const WEIGHT_DIAG: f32 = 0.0625;
 
@@ -653,10 +617,9 @@ impl EffectCtx {
                         index += 1;
                     }
 
-                    let xi = self.chroma_phase_shift(phase_shift, phase_offset, line_index * 2);
                     simd.vectorize(
                         #[inline(always)]
-                        || self.demodulate_chroma_line(simd, y, i, q, cur_line, xi),
+                        || self.demodulate_chroma_line(simd, y, i, q, cur_line, line_index),
                     );
                 },
             );
@@ -665,13 +628,7 @@ impl EffectCtx {
 
     /// Demodulate the chroma with a 2D FIR filter with adaptive weights.
     #[inline(always)]
-    fn luma_into_chroma_2d_adaptive<S: Simd>(
-        &self,
-        simd: S,
-        yiq: &mut YiqView,
-        phase_shift: PhaseShift,
-        phase_offset: i32,
-    ) {
+    fn luma_into_chroma_2d_adaptive<S: Simd>(&self, simd: S, yiq: &mut YiqView) {
         const THRESHOLD: f32 = 1e-3;
         // Prevents sharp corners from receiving huge gradients.
         const DIAG_LIMIT: f32 = 2.0;
@@ -806,10 +763,9 @@ impl EffectCtx {
                         index += 1;
                     }
 
-                    let xi = self.chroma_phase_shift(phase_shift, phase_offset, line_index * 2);
                     simd.vectorize(
                         #[inline(always)]
-                        || self.demodulate_chroma_line(simd, y, i, q, cur_line, xi),
+                        || self.demodulate_chroma_line(simd, y, i, q, cur_line, line_index),
                     );
                 },
             );
@@ -818,13 +774,7 @@ impl EffectCtx {
 
     /// Demodulate the chroma signal from the Y (luma) plane back into the I and Q planes.
     /// TODO: Make the chroma carrier's frequency/sample rate configurable.
-    fn luma_into_chroma(
-        &self,
-        yiq: &mut YiqView,
-        mut filter_mode: ChromaDemodulationFilter,
-        phase_shift: PhaseShift,
-        phase_offset: i32,
-    ) {
+    fn luma_into_chroma(&self, yiq: &mut YiqView, mut filter_mode: ChromaDemodulationFilter) {
         let width = yiq.dimensions.0;
 
         // The comb filters only work if we have at least 2 rows, and the 2D filters require at least 2 rows and 3
@@ -855,9 +805,7 @@ impl EffectCtx {
             ChromaDemodulationFilter::Box => {
                 let lines = ZipChunks::new([yiq.y, yiq.i, yiq.q, modulated], width);
                 lines.par_for_each(|index, [y, i, q, modulated]| {
-                    let xi = self.chroma_phase_shift(phase_shift, phase_offset, index * 2);
-
-                    self.luma_into_chroma_line_box(y, i, q, modulated, xi);
+                    self.luma_into_chroma_line_box(y, i, q, modulated, index);
                 });
             }
             ChromaDemodulationFilter::Notch => {
@@ -873,21 +821,20 @@ impl EffectCtx {
 
                 let lines = ZipChunks::new([yiq.y, yiq.i, yiq.q, modulated], width);
                 lines.par_for_each(|index, [y, i, q, modulated]| {
-                    let xi = self.chroma_phase_shift(phase_shift, phase_offset, index * 2);
-                    dispatch!(self.level, simd => self.demodulate_chroma_line(simd, y, i, q, modulated, xi));
+                    dispatch!(self.level, simd => self.demodulate_chroma_line(simd, y, i, q, modulated, index));
                 });
             }
             ChromaDemodulationFilter::OneLineComb => {
-                self.luma_into_chroma_comb1(yiq, phase_shift, phase_offset);
+                self.luma_into_chroma_comb1(yiq);
             }
             ChromaDemodulationFilter::TwoLineComb => {
-                self.luma_into_chroma_comb2(yiq, phase_shift, phase_offset);
+                self.luma_into_chroma_comb2(yiq);
             }
             ChromaDemodulationFilter::TwoD => {
-                dispatch!(self.level, simd => self.luma_into_chroma_2d(simd, yiq, phase_shift, phase_offset));
+                dispatch!(self.level, simd => self.luma_into_chroma_2d(simd, yiq));
             }
             ChromaDemodulationFilter::TwoDAdaptive => {
-                dispatch!(self.level, simd => self.luma_into_chroma_2d_adaptive(simd, yiq, phase_shift, phase_offset));
+                dispatch!(self.level, simd => self.luma_into_chroma_2d_adaptive(simd, yiq));
             }
         };
     }
@@ -1451,11 +1398,7 @@ impl NtscEffect {
             ChromaLowpass::None => {}
         };
 
-        ctx.chroma_into_luma(
-            yiq,
-            self.video_scanline_phase_shift,
-            self.video_scanline_phase_shift_offset,
-        );
+        ctx.chroma_into_luma(yiq);
 
         if self.composite_sharpening != 0.0 {
             let preemphasis_filter = make_lowpass(
@@ -1509,12 +1452,7 @@ impl NtscEffect {
             );
         }
 
-        ctx.luma_into_chroma(
-            yiq,
-            self.chroma_demodulation,
-            self.video_scanline_phase_shift,
-            self.video_scanline_phase_shift_offset,
-        );
+        ctx.luma_into_chroma(yiq, self.chroma_demodulation);
 
         if self.luma_smear > 0.0 {
             ctx.luma_smear(yiq, self.luma_smear);
