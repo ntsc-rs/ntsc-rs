@@ -46,7 +46,7 @@ use ntsc_rs::settings::{
 };
 use snafu::ResultExt;
 
-use log::debug;
+use log::{debug, warn};
 
 use super::{
     AppFn, NtscApp,
@@ -170,7 +170,15 @@ impl NtscApp {
                 // Load previous effect settings from storage
                 let settings = storage
                     .get_string("effect_settings")
-                    .and_then(|saved_settings| settings_list.from_json(&saved_settings).ok())
+                    .and_then(
+                        |saved_settings| match settings_list.from_json(&saved_settings) {
+                            Ok(settings) => Some(settings),
+                            Err(e) => {
+                                warn!("Error loading effect settings: {e}");
+                                None
+                            }
+                        },
+                    )
                     .unwrap_or_default();
                 let easy_mode_settings = storage
                     .get_string("easy_mode_settings")
@@ -2390,8 +2398,13 @@ impl eframe::App for NtscApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        if let Ok(settings_json) = self.settings_list.to_json_string(&self.effect_settings) {
-            storage.set_string("effect_settings", settings_json);
+        match self.settings_list.to_json_string(&self.effect_settings) {
+            Ok(settings_json) => {
+                storage.set_string("effect_settings", settings_json);
+            }
+            Err(e) => {
+                warn!("Error saving settings: {e}");
+            }
         }
 
         if let Ok(settings_json) = self

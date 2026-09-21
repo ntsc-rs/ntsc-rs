@@ -184,6 +184,8 @@ pub enum ChromaDemodulationFilter {
     Notch,
     OneLineComb,
     TwoLineComb,
+    TwoD,
+    TwoDAdaptive,
 }
 impl SettingsEnum for ChromaDemodulationFilter {}
 
@@ -423,7 +425,7 @@ impl Default for NtscEffect {
             chroma_delay_horizontal: 0.0,
             chroma_delay_vertical: 0,
             vhs_settings: Default::default(),
-            chroma_vert_blend: true,
+            chroma_vert_blend: false,
             scale: Default::default(),
         }
     }
@@ -690,6 +692,22 @@ impl Settings for NtscEffect {
                                  artifacts.",
                             ),
                             index: ChromaDemodulationFilter::Notch as u32,
+                        },
+                        MenuItem {
+                            label: "2D",
+                            description: Some(
+                                "2D \"digital-style\" filter. Highest all-around quality.",
+                            ),
+                            index: ChromaDemodulationFilter::TwoD as u32,
+                        },
+                        MenuItem {
+                            label: "2D adaptive",
+                            description: Some(
+                                "2D edge-following filter. Avoids \"dot crawl\" artifacts at all \
+                                 costs, but results in less detailed output and is likely to cause \
+                                 rainbow artifacts.",
+                            ),
+                            index: ChromaDemodulationFilter::TwoDAdaptive as u32,
                         },
                         MenuItem {
                             label: "1-line comb",
