@@ -1,9 +1,9 @@
 use core::{
     cmp,
-    f32::consts::{FRAC_1_SQRT_2, PI},
+    f32::consts::{FRAC_1_SQRT_2, PI, SQRT_2},
     ops::Range,
 };
-use fearless_simd::{Level, dispatch, prelude::*};
+use fearless_simd::{dispatch, prelude::*};
 
 #[cfg(not(feature = "std"))]
 use core_maths::CoreFloat as _;
@@ -332,65 +332,81 @@ impl EffectCtx {
     }
 
     /// Calculate the chroma subcarrier phase for a given row/field.
-    fn chroma_phase_shift(
-        &self,
-        scanline_phase_shift: PhaseShift,
-        offset: i32,
-        line_num: usize,
-    ) -> usize {
-        match scanline_phase_shift {
-            PhaseShift::Degrees90 | PhaseShift::Degrees270 => {
-                ((self.frame_num as i32 + offset + ((line_num as i32) >> 1)) & 3) as usize
-            }
-            PhaseShift::Degrees180 => {
-                ((((self.frame_num + line_num) & 2) as i32 + offset) & 3) as usize
-            }
-            PhaseShift::Degrees0 => 0,
-        }
-    }
-
-    /// Modulate a single line of the chrominance signal into the luminance signal.
-    fn chroma_into_luma_line(y: &mut [f32], i: &mut [f32], q: &mut [f32], xi: usize) {
-        const I_MULT: [f32; 4] = [1.0, 0.0, -1.0, 0.0];
-        const Q_MULT: [f32; 4] = [0.0, 1.0, 0.0, -1.0];
-
-        y.iter_mut()
-            .zip(i.iter_mut().zip(q))
-            .enumerate()
-            .for_each(|(index, (y, (i, q)))| {
-                let phase = (index + (xi & 3)) & 3;
-                *y += *i * I_MULT[phase] + *q * Q_MULT[phase];
-                // *i = 0.0;
-                // *q = 0.0;
-            });
+    fn chroma_phase_shift(&self, line_index: usize) -> usize {
+        (self.frame_num + (line_index << 1)) & 2
     }
 
     /// Modulate the chrominance signal (I and Q planes) into the Y (luminance) plane.
     /// TODO: Make the chroma carrier's frequency/sample rate configurable.
-    fn chroma_into_luma(&self, yiq: &mut YiqView, phase_shift: PhaseShift, phase_offset: i32) {
+    #[inline(always)]
+    fn chroma_into_luma<S: Simd>(&self, simd: S, yiq: &mut YiqView) {
         let width = yiq.dimensions.0;
 
         let yiq_lines = ZipChunks::new([yiq.y, yiq.i, yiq.q], width);
+        const I_MULT: [f32; 4] = [1.0, 0.0, -1.0, 0.0];
+        const Q_MULT: [f32; 4] = [0.0, 1.0, 0.0, -1.0];
 
         yiq_lines.par_for_each(|index, [y, i, q]| {
-            let xi = self.chroma_phase_shift(phase_shift, phase_offset, index * 2);
+            simd.vectorize(
+                #[inline(always)]
+                || {
+                    let xi = self.chroma_phase_shift(index);
+                    let offset_wave = |offset: usize| {
+                        S::f32s::from_fn(simd, |i| {
+                            let ii = offset + i;
 
-            Self::chroma_into_luma_line(y, i, q, xi);
+                            let sign = if ii & 2 == 0 { 1.0 } else { -1.0 };
+                            let mag = if ii & 1 == 0 { 1.0 } else { 0.0 };
+                            sign * mag
+                        })
+                    };
+
+                    let i_mult = offset_wave(xi);
+                    let q_mult = offset_wave(xi + 3);
+                    let mut y_chunks = y.chunks_exact_mut(S::f32s::N);
+                    let mut i_chunks = i.chunks_exact(S::f32s::N);
+                    let mut q_chunks = q.chunks_exact(S::f32s::N);
+                    for (y_chunk, (i, q)) in y_chunks
+                        .by_ref()
+                        .zip(i_chunks.by_ref().zip(q_chunks.by_ref()))
+                    {
+                        let mut y = S::f32s::from_slice(simd, y_chunk);
+                        let i = S::f32s::from_slice(simd, i);
+                        let q = S::f32s::from_slice(simd, q);
+
+                        y += (i * i_mult) + (q * q_mult);
+                        y.store_slice(y_chunk);
+                    }
+
+                    for (index, (y, (&i, &q))) in y_chunks
+                        .into_remainder()
+                        .iter_mut()
+                        .zip(i_chunks.remainder().iter().zip(q_chunks.remainder()))
+                        .enumerate()
+                    {
+                        let phase = (index + xi) & 3;
+                        *y += i * I_MULT[phase] + q * Q_MULT[phase];
+                    }
+                },
+            )
         });
     }
 
-    /// Demodulate the chroma back into the I and Q channels, given the Y channel and the modulated signal. This inner loop
-    /// uses SIMD on 4-wide chunks at a time and doesn't handle boundary conditions. The very first column, and any
-    /// remainder afterwards, is handled by the non-SIMD function.
+    /// Demodulate the chrominance (I and Q) signals from a combined NTSC signal, looking at a single source pixel at the
+    /// given index and writing into the destination I and Q plane pixels as well as their immediate neighbors.
     #[inline(always)]
-    fn demodulate_chroma_simd_inner<S: Simd>(
+    fn demodulate_chroma_line<S: Simd>(
+        &self,
         simd: S,
         y: &[f32],
         i: &mut [f32],
         q: &mut [f32],
         modulated: &[f32],
-        xi: usize,
-    ) -> usize {
+        line_index: usize,
+    ) {
+        assert_eq!(y.len(), modulated.len());
+        assert_eq!(y.len(), i.len());
+        assert_eq!(y.len(), q.len());
         let width = y.len();
 
         let offset_wave = |offset: usize| {
@@ -402,6 +418,7 @@ impl EffectCtx {
                 sign * mag
             })
         };
+        let xi = self.chroma_phase_shift(line_index);
         let i_mult_inv_l = offset_wave(xi) * 0.5;
         let i_mult_inv_c = offset_wave(1 + xi);
         let i_mult_inv_r = offset_wave(2 + xi) * 0.5;
@@ -434,48 +451,13 @@ impl EffectCtx {
             index += S::f32s::N;
         }
 
-        index
-    }
-
-    fn demodulate_chroma_simd(
-        y: &[f32],
-        i: &mut [f32],
-        q: &mut [f32],
-        modulated: &[f32],
-        xi: usize,
-        level: Level,
-    ) -> usize {
-        dispatch!(level, simd => Self::demodulate_chroma_simd_inner(simd, y, i, q, modulated, xi))
-    }
-
-    /// Demodulate the chrominance (I and Q) signals from a combined NTSC signal, looking at a single source pixel at the
-    /// given index and writing into the destination I and Q plane pixels as well as their immediate neighbors.
-    fn demodulate_chroma_line(
-        &self,
-        y: &[f32],
-        i: &mut [f32],
-        q: &mut [f32],
-        modulated: &[f32],
-        xi: usize,
-    ) {
-        assert_eq!(y.len(), modulated.len());
-        assert_eq!(y.len(), i.len());
-        assert_eq!(y.len(), q.len());
-        let width = y.len();
-
-        // The SIMD loop doesn't handle boundary conditions and operates on chunks of 4 pixels at a time. We need to handle
-        // both the leftmost pixel and the rightmost few. We unconditionally handle the leftmost one, so the "rightmost"
-        // range starts at 1. If there is no SIMD, process everything using the scalar approach.
-        let remainder_start = if self.level.is_fallback() {
-            1
-        } else {
-            Self::demodulate_chroma_simd(y, i, q, modulated, xi, self.level).max(1)
-        };
-
         const I_MULT_INV: [f32; 4] = [-1.0, 0.0, 1.0, 0.0];
         const Q_MULT_INV: [f32; 4] = [0.0, -1.0, 0.0, 1.0];
 
-        for index in core::iter::once(0).chain(remainder_start..width) {
+        // The SIMD loop doesn't handle boundary conditions and operates on chunks of 4 pixels at a time. We need to handle
+        // both the leftmost pixel and the rightmost few. We unconditionally handle the leftmost one, so the "rightmost"
+        // range starts at 1.
+        for index in core::iter::once(0).chain(index..width) {
             let offset_c = (index + xi) & 3;
             let chroma_c = y[index] - modulated[index];
             let mut i_modulated = chroma_c * I_MULT_INV[offset_c];
@@ -505,7 +487,7 @@ impl EffectCtx {
         i: &mut [f32],
         q: &mut [f32],
         modulated: &[f32],
-        xi: usize,
+        line_index: usize,
     ) {
         let width = y.len();
         for index in 0..width {
@@ -520,158 +502,371 @@ impl EffectCtx {
             ];
             y[index] = area.iter().sum::<f32>() * 0.25;
         }
-        self.demodulate_chroma_line(y, i, q, modulated, xi);
+        dispatch!(self.level, simd => self.demodulate_chroma_line(simd, y, i, q, modulated, line_index));
+    }
+
+    /// Demodulate the chroma with a 1-line comb filter.
+    fn luma_into_chroma_comb1(&self, yiq: &mut YiqView) {
+        let width = yiq.dimensions.0;
+        let modulated = &mut yiq.scratch;
+        // Demodulate the Y (luma) by averaging successive lines of the modulated signal
+        ZipChunks::new([yiq.y, yiq.i, yiq.q], width).par_for_each(|line_index, [y, i, q]| {
+            // "Reflect" line 2 to line 0, so that the chroma is properly demodulated for line 0.
+            // A comb filter requires the phase of the chroma carrier to alternate per line, so simply repeating line 1
+            // wouldn't work.
+            let top_line = if line_index == 0 {
+                &modulated[width..width * 2]
+            } else {
+                &modulated[(line_index - 1) * width..line_index * width]
+            };
+            let bottom_line = &modulated[line_index * width..(line_index + 1) * width];
+            // Average the two lines
+            for (y, (&top, &bottom)) in y.iter_mut().zip(top_line.iter().zip(bottom_line)) {
+                *y = (top + bottom) * 0.5;
+            }
+
+            // Demodulate the chroma
+            dispatch!(self.level, simd => self.demodulate_chroma_line(simd, y, i, q, bottom_line, line_index));
+        });
+    }
+
+    /// Demodulate the chroma with a 2-line comb filter.
+    fn luma_into_chroma_comb2(&self, yiq: &mut YiqView) {
+        let width = yiq.dimensions.0;
+        let height = yiq.num_rows();
+        let modulated = &mut *yiq.scratch;
+        ZipChunks::new([yiq.y, yiq.i, yiq.q], width).par_for_each(|line_index, [y, i, q]| {
+            // For the first line, both prev_line and next_line point to the second line. This effectively makes
+            // it a one-line comb filter for that line. See the comment above in the one-line comb filter for
+            // why we do this.
+            let prev_index = if line_index == 0 { 1 } else { line_index - 1 };
+
+            // Similar for the last line.
+            let next_index = if line_index == height - 1 {
+                height - 2
+            } else {
+                line_index + 1
+            };
+
+            let prev_line = &modulated[prev_index * width..(prev_index + 1) * width];
+            let cur_line = &modulated[line_index * width..(line_index + 1) * width];
+            let next_line = &modulated[next_index * width..(next_index + 1) * width];
+
+            for sample_index in 0..width {
+                let cur_sample = cur_line[sample_index];
+                let blended = (cur_sample * 0.5)
+                    + (prev_line[sample_index] * 0.25)
+                    + (next_line[sample_index] * 0.25);
+                y[sample_index] = blended;
+            }
+
+            dispatch!(self.level, simd => self.demodulate_chroma_line(simd, y, i, q, cur_line, line_index));
+        });
+    }
+
+    /// Demodulate the chroma with a 2D FIR filter.
+    #[inline(always)]
+    fn luma_into_chroma_2d<S: Simd>(&self, simd: S, yiq: &mut YiqView) {
+        // Weight for diagonally-adjacent pixels / sharpening amount. Useful range is 0.0625-0.125.
+        const WEIGHT_DIAG: f32 = 0.0625;
+
+        let width = yiq.dimensions.0;
+        let height = yiq.num_rows();
+        let modulated = &mut *yiq.scratch;
+        ZipChunks::new([yiq.y, yiq.i, yiq.q], width).par_for_each(|line_index, [y, i, q]| {
+            simd.vectorize(
+                #[inline(always)]
+                || {
+                    // For the first line, both prev_line and next_line point to the second line.
+                    let prev_index = if line_index == 0 { 1 } else { line_index - 1 };
+
+                    // Similar for the last line.
+                    let next_index = if line_index == height - 1 {
+                        height - 2
+                    } else {
+                        line_index + 1
+                    };
+
+                    let prev_line = &modulated[prev_index * width..(prev_index + 1) * width];
+                    let cur_line = &modulated[line_index * width..(line_index + 1) * width];
+                    let next_line = &modulated[next_index * width..(next_index + 1) * width];
+                    let w_center = 0.5 + 2.0 * (WEIGHT_DIAG * 2.0);
+
+                    // This handles boundary conditions, etc.
+                    let filter_scalar = |sample_index: usize| {
+                        let prev_sample_idx = if sample_index < 2 {
+                            sample_index + 2
+                        } else {
+                            sample_index - 2
+                        };
+                        let next_sample_idx = if sample_index > width - 3 {
+                            sample_index - 2
+                        } else {
+                            sample_index + 2
+                        };
+
+                        cur_line[sample_index] * w_center
+                            + ((cur_line[prev_sample_idx] + cur_line[next_sample_idx])
+                                + (prev_line[sample_index] + next_line[sample_index]))
+                                * 0.125
+                            - ((prev_line[prev_sample_idx] + prev_line[next_sample_idx])
+                                + (next_line[prev_sample_idx] + next_line[next_sample_idx]))
+                                * WEIGHT_DIAG
+                    };
+
+                    for index in 0..2 {
+                        y[index] = filter_scalar(index);
+                    }
+                    let mut index = 2;
+                    while index < width.saturating_sub(S::f32s::N + 2) {
+                        let prev_idx = index - 2;
+                        let next_idx = index + 2;
+                        let tl =
+                            S::f32s::from_slice(simd, &prev_line[prev_idx..prev_idx + S::f32s::N]);
+                        let t = S::f32s::from_slice(simd, &prev_line[index..index + S::f32s::N]);
+                        let tr =
+                            S::f32s::from_slice(simd, &prev_line[next_idx..next_idx + S::f32s::N]);
+                        let l =
+                            S::f32s::from_slice(simd, &cur_line[prev_idx..prev_idx + S::f32s::N]);
+                        let c = S::f32s::from_slice(simd, &cur_line[index..index + S::f32s::N]);
+                        let r =
+                            S::f32s::from_slice(simd, &cur_line[next_idx..next_idx + S::f32s::N]);
+                        let bl =
+                            S::f32s::from_slice(simd, &next_line[prev_idx..prev_idx + S::f32s::N]);
+                        let b = S::f32s::from_slice(simd, &next_line[index..index + S::f32s::N]);
+                        let br =
+                            S::f32s::from_slice(simd, &next_line[next_idx..next_idx + S::f32s::N]);
+
+                        let blended = c * w_center + ((l + r) + (t + b)) * 0.125
+                            - ((tl + tr) + (bl + br)) * WEIGHT_DIAG;
+                        blended.store_slice(&mut y[index..index + S::f32s::N]);
+
+                        index += S::f32s::N;
+                    }
+
+                    while index < width {
+                        y[index] = filter_scalar(index);
+                        index += 1;
+                    }
+
+                    simd.vectorize(
+                        #[inline(always)]
+                        || self.demodulate_chroma_line(simd, y, i, q, cur_line, line_index),
+                    );
+                },
+            );
+        });
+    }
+
+    /// Demodulate the chroma with a 2D FIR filter with adaptive weights.
+    #[inline(always)]
+    fn luma_into_chroma_2d_adaptive<S: Simd>(&self, simd: S, yiq: &mut YiqView) {
+        const THRESHOLD: f32 = 1e-3;
+        // Prevents sharp corners from receiving huge gradients.
+        const DIAG_LIMIT: f32 = 2.0;
+
+        let width = yiq.dimensions.0;
+        let height = yiq.num_rows();
+        let modulated = &mut *yiq.scratch;
+        ZipChunks::new([yiq.y, yiq.i, yiq.q], width).par_for_each(|line_index, [y, i, q]| {
+            simd.vectorize(
+                #[inline(always)]
+                || {
+                    // For the first line, both prev_line and next_line point to the second line. This effectively makes
+                    // it a one-line comb filter for that line. See the comment above in the one-line comb filter for
+                    // why we do this.
+                    let prev_index = if line_index == 0 { 1 } else { line_index - 1 };
+
+                    // Similar for the last line.
+                    let next_index = if line_index == height - 1 {
+                        height - 2
+                    } else {
+                        line_index + 1
+                    };
+
+                    let prev_line = &modulated[prev_index * width..(prev_index + 1) * width];
+                    let cur_line = &modulated[line_index * width..(line_index + 1) * width];
+                    let next_line = &modulated[next_index * width..(next_index + 1) * width];
+
+                    let filter_scalar = |sample_index: usize| {
+                        let prev_sample_idx = if sample_index < 2 {
+                            sample_index + 2
+                        } else {
+                            sample_index - 2
+                        };
+                        let next_sample_idx = if sample_index > width - 3 {
+                            sample_index - 2
+                        } else {
+                            sample_index + 2
+                        };
+
+                        let tl = prev_line[prev_sample_idx];
+                        let t = prev_line[sample_index];
+                        let tr = prev_line[next_sample_idx];
+                        let l = cur_line[prev_sample_idx];
+                        let c = cur_line[sample_index];
+                        let r = cur_line[next_sample_idx];
+                        let bl = next_line[prev_sample_idx];
+                        let b = next_line[sample_index];
+                        let br = next_line[next_sample_idx];
+
+                        // X and Y gradients. I tried a Sobel filter, but it seems to blow up more in some cases (e.g.
+                        // sharp corners).
+                        let g_x = (tr - tl) + (r - l) + (br - bl);
+                        let g_y = (bl - tl) + (b - t) + (br - tr);
+
+                        let gx_t = g_x * (1.0 / THRESHOLD);
+                        let gy_t = g_y * (1.0 / THRESHOLD);
+                        let gd1_t = (g_x + g_y) * (1.0 / (THRESHOLD * SQRT_2));
+                        let gd2_t = (g_x - g_y) * (1.0 / (THRESHOLD * SQRT_2));
+
+                        let a_x = 1.0 / (1.0 + (gx_t * gx_t));
+                        let a_y = 1.0 / (1.0 + (gy_t * gy_t));
+
+                        let norm = 0.25 / (a_x + a_y);
+
+                        let wx = a_x * norm;
+                        let wy = a_y * norm;
+                        let wd1 = norm
+                            / (1.0 + (gd1_t * gd1_t)).max(DIAG_LIMIT / (THRESHOLD * THRESHOLD));
+                        let wd2 = norm
+                            / (1.0 + (gd2_t * gd2_t)).max(DIAG_LIMIT / (THRESHOLD * THRESHOLD));
+                        let w_center = 0.5 + 2.0 * (wd1 + wd2);
+
+                        (c * w_center) + (((l + r) * wx) + ((t + b) * wy))
+                            - (((tl + br) * wd1) + ((tr + bl) * wd2))
+                    };
+
+                    for index in 0..2 {
+                        y[index] = filter_scalar(index);
+                    }
+
+                    let mut index = 2;
+                    while index < width.saturating_sub(S::f32s::N + 2) {
+                        let prev_idx = index - 2;
+                        let next_idx = index + 2;
+                        let tl =
+                            S::f32s::from_slice(simd, &prev_line[prev_idx..prev_idx + S::f32s::N]);
+                        let t = S::f32s::from_slice(simd, &prev_line[index..index + S::f32s::N]);
+                        let tr =
+                            S::f32s::from_slice(simd, &prev_line[next_idx..next_idx + S::f32s::N]);
+                        let l =
+                            S::f32s::from_slice(simd, &cur_line[prev_idx..prev_idx + S::f32s::N]);
+                        let c = S::f32s::from_slice(simd, &cur_line[index..index + S::f32s::N]);
+                        let r =
+                            S::f32s::from_slice(simd, &cur_line[next_idx..next_idx + S::f32s::N]);
+                        let bl =
+                            S::f32s::from_slice(simd, &next_line[prev_idx..prev_idx + S::f32s::N]);
+                        let b = S::f32s::from_slice(simd, &next_line[index..index + S::f32s::N]);
+                        let br =
+                            S::f32s::from_slice(simd, &next_line[next_idx..next_idx + S::f32s::N]);
+
+                        let g_x = (tr - tl) + (r - l) + (br - bl);
+                        let g_y = (bl - tl) + (b - t) + (br - tr);
+
+                        let gx_t = g_x * (1.0 / THRESHOLD);
+                        let gy_t = g_y * (1.0 / THRESHOLD);
+                        let gd1_t = (g_x + g_y) * (1.0 / (THRESHOLD * SQRT_2));
+                        let gd2_t = (g_x - g_y) * (1.0 / (THRESHOLD * SQRT_2));
+
+                        let a_x = S::f32s::splat(simd, 1.0) / ((gx_t * gx_t) + 1.0);
+                        let a_y = S::f32s::splat(simd, 1.0) / ((gy_t * gy_t) + 1.0);
+
+                        let norm = S::f32s::splat(simd, 0.25) / (a_x + a_y);
+
+                        let wx = a_x * norm;
+                        let wy = a_y * norm;
+                        let wd1 = norm
+                            / ((gd1_t * gd1_t) + 1.0).max(DIAG_LIMIT / (THRESHOLD * THRESHOLD));
+                        let wd2 = norm
+                            / ((gd2_t * gd2_t) + 1.0).max(DIAG_LIMIT / (THRESHOLD * THRESHOLD));
+                        let w_center = (wd1 + wd2) * 2.0 + 0.5;
+
+                        let blended = (c * w_center) + (((l + r) * wx) + ((t + b) * wy))
+                            - (((tl + br) * wd1) + ((tr + bl) * wd2));
+
+                        blended.store_slice(&mut y[index..index + S::f32s::N]);
+
+                        index += S::f32s::N;
+                    }
+
+                    while index < width {
+                        y[index] = filter_scalar(index);
+                        index += 1;
+                    }
+
+                    simd.vectorize(
+                        #[inline(always)]
+                        || self.demodulate_chroma_line(simd, y, i, q, cur_line, line_index),
+                    );
+                },
+            );
+        });
     }
 
     /// Demodulate the chroma signal from the Y (luma) plane back into the I and Q planes.
     /// TODO: Make the chroma carrier's frequency/sample rate configurable.
-    fn luma_into_chroma(
-        &self,
-        yiq: &mut YiqView,
-        mut filter_mode: ChromaDemodulationFilter,
-        phase_shift: PhaseShift,
-        phase_offset: i32,
-    ) {
+    fn luma_into_chroma(&self, yiq: &mut YiqView, mut filter_mode: ChromaDemodulationFilter) {
         let width = yiq.dimensions.0;
-        let height = yiq.num_rows();
+
+        // The comb filters only work if we have at least 2 rows, and the 2D filters require at least 2 rows and 3
+        // columns.
+        if (yiq.num_rows() == 1
+            && matches!(
+                filter_mode,
+                ChromaDemodulationFilter::OneLineComb
+                    | ChromaDemodulationFilter::TwoLineComb
+                    | ChromaDemodulationFilter::TwoD
+                    | ChromaDemodulationFilter::TwoDAdaptive
+            ))
+            || (width < 3
+                && matches!(
+                    filter_mode,
+                    ChromaDemodulationFilter::TwoD | ChromaDemodulationFilter::TwoDAdaptive
+                ))
+        {
+            filter_mode = ChromaDemodulationFilter::Notch;
+        }
 
         // For all four demodulation methods, we copy the original modulated signal to the scratch buffer, then write the
         // demodulated Y signal back into yiq.y
         let modulated = &mut yiq.scratch;
         modulated.copy_from_slice(yiq.y);
 
-        // The comb filters only work if we have at least 2 lines. To avoid a panic, use a notch filter if we have only 1 line.
-        if height == 1
-            && matches!(
-                filter_mode,
-                ChromaDemodulationFilter::OneLineComb | ChromaDemodulationFilter::TwoLineComb | ChromaDemodulationFilter::AdaptiveComb
-            )
-        {
-            filter_mode = ChromaDemodulationFilter::Notch;
-        }
-
         match filter_mode {
             ChromaDemodulationFilter::Box => {
                 let lines = ZipChunks::new([yiq.y, yiq.i, yiq.q, modulated], width);
                 lines.par_for_each(|index, [y, i, q, modulated]| {
-                    let xi = self.chroma_phase_shift(phase_shift, phase_offset, index * 2);
-
-                    self.luma_into_chroma_line_box(y, i, q, modulated, xi);
+                    self.luma_into_chroma_line_box(y, i, q, modulated, index);
                 });
             }
             ChromaDemodulationFilter::Notch => {
                 // Apply a notch filter to the signal to remove the high-frequency chroma carrier, and store it in the
                 // scratch buffer. We can then get *just* the chroma by subtracting the filtered signal from the original.
-                let filter: TransferFunction = make_notch_filter(0.5, 2.0);
-                self.filter_plane(yiq.y, width, &filter, InitialCondition::Zero, 0);
+                self.filter_plane(
+                    yiq.y,
+                    width,
+                    &make_notch_filter(0.5, 2.0),
+                    InitialCondition::Zero,
+                    0,
+                );
 
                 let lines = ZipChunks::new([yiq.y, yiq.i, yiq.q, modulated], width);
                 lines.par_for_each(|index, [y, i, q, modulated]| {
-                    let xi = self.chroma_phase_shift(phase_shift, phase_offset, index * 2);
-                    self.demodulate_chroma_line(y, i, q, modulated, xi);
+                    dispatch!(self.level, simd => self.demodulate_chroma_line(simd, y, i, q, modulated, index));
                 });
             }
             ChromaDemodulationFilter::OneLineComb => {
-                // Demodulate the Y (luma) by averaging successive lines of the modulated signal
-                ZipChunks::new([yiq.y, yiq.i, yiq.q], width).par_for_each(
-                    |line_index, [y, i, q]| {
-                        // "Reflect" line 2 to line 0, so that the chroma is properly demodulated for line 0.
-                        // A comb filter requires the phase of the chroma carrier to alternate per line, so simply repeating line 1
-                        // wouldn't work.
-                        let top_line = if line_index == 0 {
-                            &modulated[width..width * 2]
-                        } else {
-                            &modulated[(line_index - 1) * width..line_index * width]
-                        };
-                        let bottom_line = &modulated[line_index * width..(line_index + 1) * width];
-                        // Average the two lines
-                        for (y, (&top, &bottom)) in
-                            y.iter_mut().zip(top_line.iter().zip(bottom_line))
-                        {
-                            *y = (top + bottom) * 0.5;
-                        }
-
-                        // Demodulate the chroma
-                        let xi = self.chroma_phase_shift(phase_shift, phase_offset, line_index * 2);
-                        self.demodulate_chroma_line(y, i, q, bottom_line, xi);
-                    },
-                );
+                self.luma_into_chroma_comb1(yiq);
             }
             ChromaDemodulationFilter::TwoLineComb => {
-                let lines = ZipChunks::new([yiq.y, yiq.i, yiq.q], width);
-                lines.par_for_each(|line_index, [y, i, q]| {
-                    // For the first line, both prev_line and next_line point to the second line. This effectively makes
-                    // it a one-line comb filter for that line. See the comment above in the one-line comb filter for
-                    // why we do this.
-                    let prev_index = if line_index == 0 { 1 } else { line_index - 1 };
-
-                    // Similar for the last line.
-                    let next_index = if line_index == height - 1 {
-                        height - 2
-                    } else {
-                        line_index + 1
-                    };
-
-                    let prev_line = &modulated[prev_index * width..(prev_index + 1) * width];
-                    let cur_line = &modulated[line_index * width..(line_index + 1) * width];
-                    let next_line = &modulated[next_index * width..(next_index + 1) * width];
-
-                    for sample_index in 0..width {
-                        let cur_sample = cur_line[sample_index];
-                        let blended = (cur_sample * 0.5)
-                            + (prev_line[sample_index] * 0.25)
-                            + (next_line[sample_index] * 0.25);
-                        y[sample_index] = blended;
-                    }
-
-                    let xi = self.chroma_phase_shift(phase_shift, phase_offset, line_index * 2);
-                    self.demodulate_chroma_line(y, i, q, cur_line, xi);
-                });
+                self.luma_into_chroma_comb2(yiq);
             }
-            ChromaDemodulationFilter::AdaptiveComb => {
-            	let mut y_notch = yiq.y.to_vec();
-            	let notch_filter: TransferFunction = make_notch_filter(0.5, 2.0);
-            	self.filter_plane(&mut y_notch, width, &notch_filter, InitialCondition::Zero, 0);
-
-                let lines = ZipChunks::new([yiq.y, yiq.i, yiq.q], width);
-                lines.par_for_each(|line_index, [y, i, q]| {
-                    // For the first line, both prev_line and next_line point to the second line. This effectively makes
-                    // it a one-line comb filter for that line. See the comment above in the one-line comb filter for
-                    // why we do this.
-                    let prev_index = if line_index == 0 { 1 } else { line_index - 1 };
-
-                    // Similar for the last line.
-                    let next_index = if line_index == height - 1 {
-                        height - 2
-                    } else {
-                        line_index + 1
-                    };
-
-                    let prev_line = &modulated[prev_index * width..(prev_index + 1) * width];
-                    let cur_line = &modulated[line_index * width..(line_index + 1) * width];
-                    let next_line = &modulated[next_index * width..(next_index + 1) * width];
-
-                    for sample_index in 0..width {
-                    	let prev_sample = prev_line[sample_index];
-                        let cur_sample = cur_line[sample_index];
-                        let next_sample = next_line[sample_index];
-
-                        let prev_diff = (cur_sample - prev_sample).abs();
-                        let next_diff = (cur_sample - next_sample).abs();
-
-                        let total_diff = (prev_diff + next_diff) * 0.5;
-                        let total_weight = (1.0 - (total_diff / 0.25)).clamp(0.0, 1.0);
-                        
-                        let blended = (cur_sample * 0.5)
-                        	+ (prev_sample * 0.25)
-                        	+ (next_sample * 0.25);
-                        
-                        y[sample_index] = blended * total_weight + y_notch[line_index * width + sample_index] * (1.0 - total_weight);
-                    }
-
-                    let xi = self.chroma_phase_shift(phase_shift, phase_offset, line_index * 2);
-                    self.demodulate_chroma_line(y, i, q, cur_line, xi);
-                });
+            ChromaDemodulationFilter::TwoD => {
+                dispatch!(self.level, simd => self.luma_into_chroma_2d(simd, yiq));
+            }
+            ChromaDemodulationFilter::TwoDAdaptive => {
+                dispatch!(self.level, simd => self.luma_into_chroma_2d_adaptive(simd, yiq));
             }
         };
     }
@@ -1235,11 +1430,7 @@ impl NtscEffect {
             ChromaLowpass::None => {}
         };
 
-        ctx.chroma_into_luma(
-            yiq,
-            self.video_scanline_phase_shift,
-            self.video_scanline_phase_shift_offset,
-        );
+        dispatch!(ctx.level, simd => ctx.chroma_into_luma(simd, yiq));
 
         if self.composite_sharpening != 0.0 {
             let preemphasis_filter = make_lowpass(
@@ -1293,12 +1484,7 @@ impl NtscEffect {
             );
         }
 
-        ctx.luma_into_chroma(
-            yiq,
-            self.chroma_demodulation,
-            self.video_scanline_phase_shift,
-            self.video_scanline_phase_shift_offset,
-        );
+        ctx.luma_into_chroma(yiq, self.chroma_demodulation);
 
         if self.luma_smear > 0.0 {
             ctx.luma_smear(yiq, self.luma_smear);

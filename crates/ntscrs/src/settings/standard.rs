@@ -68,16 +68,6 @@ impl SettingsEnum for LumaLowpass {}
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, IntoPrimitive)]
-pub enum PhaseShift {
-    Degrees0,
-    Degrees90,
-    Degrees180,
-    Degrees270,
-}
-impl SettingsEnum for PhaseShift {}
-
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, IntoPrimitive)]
 pub enum VHSTapeSpeed {
     NONE,
     SP,
@@ -184,7 +174,8 @@ pub enum ChromaDemodulationFilter {
     Notch,
     OneLineComb,
     TwoLineComb,
-    AdaptiveComb,
+    TwoD,
+    TwoDAdaptive,
 }
 impl SettingsEnum for ChromaDemodulationFilter {}
 
@@ -290,10 +281,11 @@ pub mod setting_id {
     use super::NtscEffect;
     type NtscSettingID = SettingID<NtscEffect>;
 
+    // All of the setting IDs. I try to keep deleted ones commented out here for context.
     pub const CHROMA_LOWPASS_IN: NtscSettingID = setting_id!(0, "chroma_lowpass_in", chroma_lowpass_in);
     pub const COMPOSITE_SHARPENING: NtscSettingID = setting_id!(1, "composite_preemphasis", composite_sharpening);
-    pub const VIDEO_SCANLINE_PHASE_SHIFT: NtscSettingID = setting_id!(2, "video_scanline_phase_shift", video_scanline_phase_shift);
-    pub const VIDEO_SCANLINE_PHASE_SHIFT_OFFSET: NtscSettingID = setting_id!(3, "video_scanline_phase_shift_offset", video_scanline_phase_shift_offset);
+    //pub const VIDEO_SCANLINE_PHASE_SHIFT: NtscSettingID = setting_id!(2, "video_scanline_phase_shift", video_scanline_phase_shift);
+    //pub const VIDEO_SCANLINE_PHASE_SHIFT_OFFSET: NtscSettingID = setting_id!(3, "video_scanline_phase_shift_offset", video_scanline_phase_shift_offset);
     pub const COMPOSITE_NOISE_INTENSITY: NtscSettingID = setting_id!(4, "composite_noise_intensity", composite_noise.settings.intensity);
     pub const CHROMA_NOISE_INTENSITY: NtscSettingID = setting_id!(5, "chroma_noise_intensity", chroma_noise.settings.intensity);
     pub const SNOW_INTENSITY: NtscSettingID = setting_id!(6, "snow_intensity", snow_intensity);
@@ -365,8 +357,6 @@ pub struct NtscEffect {
     pub chroma_demodulation: ChromaDemodulationFilter,
     pub luma_smear: f32,
     pub composite_sharpening: f32,
-    pub video_scanline_phase_shift: PhaseShift,
-    pub video_scanline_phase_shift_offset: i32,
     pub head_switching: SettingsBlock<HeadSwitchingSettings>,
     pub tracking_noise: SettingsBlock<TrackingNoiseSettings>,
     pub composite_noise: SettingsBlock<FbmNoiseSettings>,
@@ -397,8 +387,6 @@ impl Default for NtscEffect {
             luma_smear: 0.5,
             chroma_lowpass_out: ChromaLowpass::Full,
             composite_sharpening: 1.0,
-            video_scanline_phase_shift: PhaseShift::Degrees180,
-            video_scanline_phase_shift_offset: 0,
             head_switching: Default::default(),
             tracking_noise: Default::default(),
             ringing: Default::default(),
@@ -424,7 +412,7 @@ impl Default for NtscEffect {
             chroma_delay_horizontal: 0.0,
             chroma_delay_vertical: 0,
             vhs_settings: Default::default(),
-            chroma_vert_blend: true,
+            chroma_vert_blend: false,
             scale: Default::default(),
         }
     }
@@ -634,44 +622,6 @@ impl Settings for NtscEffect {
                 id: setting_id::SNOW_ANISOTROPY,
             },
             SettingDescriptor {
-                label: "Scanline phase shift",
-                description: Some(
-                    "Phase shift of the chrominance (color) signal each scanline. Usually 180 \
-                     degrees.",
-                ),
-                kind: SettingKind::Enumeration {
-                    options: vec![
-                        MenuItem {
-                            label: "0 degrees",
-                            description: None,
-                            index: PhaseShift::Degrees0 as u32,
-                        },
-                        MenuItem {
-                            label: "90 degrees",
-                            description: None,
-                            index: PhaseShift::Degrees90 as u32,
-                        },
-                        MenuItem {
-                            label: "180 degrees",
-                            description: None,
-                            index: PhaseShift::Degrees180 as u32,
-                        },
-                        MenuItem {
-                            label: "270 degrees",
-                            description: None,
-                            index: PhaseShift::Degrees270 as u32,
-                        },
-                    ],
-                },
-                id: setting_id::VIDEO_SCANLINE_PHASE_SHIFT,
-            },
-            SettingDescriptor {
-                label: "Scanline phase shift offset",
-                description: None,
-                kind: SettingKind::IntRange { range: 0..=3 },
-                id: setting_id::VIDEO_SCANLINE_PHASE_SHIFT_OFFSET,
-            },
-            SettingDescriptor {
                 label: "Chroma demodulation filter",
                 description: Some(
                     "Filter used to modulate the chrominance (color) data out of the composite \
@@ -693,11 +643,26 @@ impl Settings for NtscEffect {
                             index: ChromaDemodulationFilter::Notch as u32,
                         },
                         MenuItem {
+                            label: "2D",
+                            description: Some(
+                                "2D \"digital-style\" filter. Highest all-around quality.",
+                            ),
+                            index: ChromaDemodulationFilter::TwoD as u32,
+                        },
+                        MenuItem {
+                            label: "2D adaptive",
+                            description: Some(
+                                "2D edge-following filter. Avoids \"dot crawl\" artifacts at all \
+                                 costs, but results in less detailed output and is likely to cause \
+                                 rainbow artifacts.",
+                            ),
+                            index: ChromaDemodulationFilter::TwoDAdaptive as u32,
+                        },
+                        MenuItem {
                             label: "1-line comb",
                             description: Some(
                                 "Average the current row with the previous one, phase-cancelling \
-                                 the chrominance (color) signals. Only works if the scanline \
-                                 phase shift is 180 degrees.",
+                                 the chrominance (color) signals.",
                             ),
                             index: ChromaDemodulationFilter::OneLineComb as u32,
                         },
@@ -705,8 +670,7 @@ impl Settings for NtscEffect {
                             label: "2-line comb",
                             description: Some(
                                 "Average the current row with the previous and next ones, \
-                                 phase-cancelling the chrominance (color) signals. Only works if \
-                                 the scanline phase shift is 180 degrees.",
+                                 phase-cancelling the chrominance (color) signals.",
                             ),
                             index: ChromaDemodulationFilter::TwoLineComb as u32,
                         },
@@ -1293,18 +1257,6 @@ impl SettingsList<NtscEffect> {
         settings.luma_smear = 0.0;
         settings.composite_sharpening = json
             .get_and_expect::<f32>("_composite_preemphasis")?
-            .unwrap_or_default();
-        settings.video_scanline_phase_shift = match json
-            .get_and_expect::<f32>("_video_scanline_phase_shift")?
-            .unwrap_or_default()
-        {
-            90.0 => PhaseShift::Degrees90,
-            180.0 => PhaseShift::Degrees180,
-            270.0 => PhaseShift::Degrees270,
-            _ => PhaseShift::Degrees0,
-        };
-        settings.video_scanline_phase_shift_offset = json
-            .get_and_expect::<i32>("_video_scanline_phase_shift_offset")?
             .unwrap_or_default();
         settings.head_switching = SettingsBlock {
             enabled: json

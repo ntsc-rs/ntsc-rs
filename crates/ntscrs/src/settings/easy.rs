@@ -7,7 +7,7 @@ use super::{
     MenuItem, SettingDescriptor, SettingKind, Settings, SettingsBlock,
     standard::{
         ChromaDemodulationFilter, ChromaLowpass, FbmNoiseSettings, FilterType,
-        HeadSwitchingMidLineSettings, HeadSwitchingSettings, LumaLowpass, NtscEffect, PhaseShift,
+        HeadSwitchingMidLineSettings, HeadSwitchingSettings, LumaLowpass, NtscEffect,
         RingingSettings, ScaleSettings, TrackingNoiseSettings, UseField, VHSEdgeWaveSettings,
         VHSSettings, VHSSharpenSettings, VHSTapeSpeed,
     },
@@ -494,8 +494,6 @@ impl From<&EasyMode> for NtscEffect {
             chroma_demodulation: easy_settings.chroma_demodulation_filter,
             luma_smear: easy_settings.luma_smear,
             composite_sharpening: easy_settings.saturation,
-            video_scanline_phase_shift: PhaseShift::Degrees180,
-            video_scanline_phase_shift_offset: 0,
             head_switching: SettingsBlock {
                 enabled: easy_settings.vhs_settings.enabled
                     && easy_settings.vhs_settings.settings.head_switching > 0.0,
