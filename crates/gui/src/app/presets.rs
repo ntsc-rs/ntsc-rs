@@ -341,6 +341,7 @@ impl PresetsListState {
         dir: &DirListing,
         just_pressed_save: bool,
         selected_preset_modified: bool,
+        is_root_listing: bool,
     ) -> Option<Action> {
         let mut action = None;
 
@@ -353,7 +354,7 @@ impl PresetsListState {
         };
 
         if not_loaded {
-            dir.reload(executor, false);
+            dir.reload(executor, is_root_listing);
         }
         match &*dir_state {
             DirState::NotLoaded | DirState::Loading(None) => {
@@ -489,6 +490,7 @@ impl PresetsListState {
                 listing,
                 just_pressed_save,
                 selected_preset_modified,
+                false,
             ) {
                 action = Some(new_action);
             }
@@ -726,6 +728,7 @@ impl NtscApp {
                         &root_listing,
                         just_pressed_save,
                         selected_preset_modified,
+                        true,
                     ) {
                         action = Some(new_action);
                     }
