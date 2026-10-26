@@ -190,7 +190,10 @@ unsafe fn action_describe(descriptor: OfxImageEffectHandle) -> OfxResult<()> {
         .propSetInt
         .ok_or(OfxStat::kOfxStatFailed)?;
 
-    propSetString(effectProps, kOfxPropLabel.as_ptr(), 0, c"NTSC-rs".as_ptr()).ofx_ok()?;
+    const LABEL: &CStr = c"NTSC-rs";
+    propSetString(effectProps, kOfxPropLabel.as_ptr(), 0, LABEL.as_ptr()).ofx_ok()?;
+    propSetString(effectProps, kOfxPropShortLabel.as_ptr(), 0, LABEL.as_ptr()).ofx_ok()?;
+    propSetString(effectProps, kOfxPropLongLabel.as_ptr(), 0, LABEL.as_ptr()).ofx_ok()?;
 
     propSetString(
         effectProps,
