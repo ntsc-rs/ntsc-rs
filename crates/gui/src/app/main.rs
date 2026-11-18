@@ -42,7 +42,7 @@ use crate::{
 use ntsc_rs::settings::{
     EnumValue as SettingsEnumValue, SettingDescriptor, SettingKind, Settings, SettingsList,
     easy::{self, EasyMode},
-    standard::{NtscEffect, setting_id},
+    standard::{NtscEffect, VideoStandard, setting_id},
 };
 use snafu::ResultExt;
 
@@ -485,6 +485,15 @@ impl NtscApp {
                 self.effect_settings.clone()
             };
             egui_sink.set_property("settings", NtscFilterSettings(effect_settings));
+        }
+    }
+
+    /// Suffix appended to default output file names, based on the selected video standard.
+    fn output_suffix(&self) -> &'static str {
+        if !self.easy_mode_enabled && self.effect_settings.video_standard == VideoStandard::Pal {
+            "_pal"
+        } else {
+            "_ntsc"
         }
     }
 
@@ -1262,7 +1271,7 @@ impl NtscApp {
                     let mut file_dialog = rfd::AsyncFileDialog::new().set_parent(frame);
 
                     if output_path.as_os_str().is_empty() {
-                        // By default, name the output file [source filename]_ntsc.[ext] (for video files) or [source
+                        // By default, name the output file [source filename]_ntsc.[ext] (or _pal with PAL selected) (for video files) or [source
                         // filename]_####.[ext] (for image sequences) and put it in the same directory as the source
                         // file.
                         if let Some(PipelineInfo {
@@ -1277,7 +1286,8 @@ impl NtscApp {
                                 if self.render_settings.output_codec.is_image_sequence() {
                                     file_name.push_str("_####.");
                                 } else {
-                                    file_name.push_str("_ntsc.");
+                                    file_name.push_str(self.output_suffix());
+                                    file_name.push('.');
                                 }
                                 file_name.push_str(self.render_settings.output_codec.extension());
                                 file_dialog = file_dialog.set_file_name(file_name);
@@ -1573,11 +1583,12 @@ impl NtscApp {
 
                     if let Some((src_path, dst_path)) = save_image_to {
                         let ctx = ui.ctx().clone();
+                        let suffix = self.output_suffix();
                         let handle = rfd::AsyncFileDialog::new()
                             .set_parent(frame)
                             .set_directory(dst_path.parent().unwrap_or(Path::new("/")))
                             .set_file_name(format!(
-                                "{}_ntsc.png",
+                                "{}{suffix}.png",
                                 dst_path.file_name().to_owned().unwrap().to_string_lossy()
                             ))
                             .save_file();
