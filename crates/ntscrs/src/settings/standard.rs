@@ -49,6 +49,15 @@ impl UseField {
     }
 }
 
+/// The analog color TV standard to emulate.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, IntoPrimitive)]
+pub enum VideoStandard {
+    Ntsc = 0,
+    Pal,
+}
+impl SettingsEnum for VideoStandard {}
+
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, IntoPrimitive)]
 pub enum FilterType {
@@ -344,6 +353,7 @@ pub mod setting_id {
     pub const VERTICAL_SCALE: NtscSettingID = setting_id!(59, "vertical_scale", scale.settings.vertical_scale);
     pub const SCALE_WITH_VIDEO_SIZE: NtscSettingID = setting_id!(60, "scale_with_video_size", scale.settings.scale_with_video_size);
     pub const SCALE_SETTINGS: NtscSettingID = setting_id!(61, "scale_settings", scale.enabled);
+    pub const VIDEO_STANDARD: NtscSettingID = setting_id!(62, "video_standard", video_standard);
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -351,6 +361,7 @@ pub mod setting_id {
 pub struct NtscEffect {
     pub random_seed: i32,
     pub use_field: UseField,
+    pub video_standard: VideoStandard,
     pub filter_type: FilterType,
     pub input_luma_filter: LumaLowpass,
     pub chroma_lowpass_in: ChromaLowpass,
@@ -380,6 +391,7 @@ impl Default for NtscEffect {
         Self {
             random_seed: 0,
             use_field: UseField::InterleavedUpper,
+            video_standard: VideoStandard::Ntsc,
             filter_type: FilterType::Butterworth,
             input_luma_filter: LumaLowpass::Notch,
             chroma_lowpass_in: ChromaLowpass::Full,
@@ -479,6 +491,30 @@ impl Settings for NtscEffect {
                     ],
                 },
                 id: setting_id::USE_FIELD,
+            },
+            SettingDescriptor {
+                label: "Video standard",
+                description: Some(
+                    "The analog color TV standard to emulate. PAL uses a higher color subcarrier \
+                     frequency, equal U/V chroma bandwidth, and flips the phase of the V signal \
+                     every line. The comb and 2D chroma demodulation filters are only available \
+                     for NTSC; PAL falls back to the notch filter.",
+                ),
+                kind: SettingKind::Enumeration {
+                    options: vec![
+                        MenuItem {
+                            label: "NTSC",
+                            description: Some("NTSC (North America, Japan)."),
+                            index: VideoStandard::Ntsc as u32,
+                        },
+                        MenuItem {
+                            label: "PAL",
+                            description: Some("PAL (Europe, Australia, much of Asia and Africa)."),
+                            index: VideoStandard::Pal as u32,
+                        },
+                    ],
+                },
+                id: setting_id::VIDEO_STANDARD,
             },
             SettingDescriptor {
                 label: "Lowpass filter type",

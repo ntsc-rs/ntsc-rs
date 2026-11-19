@@ -25,6 +25,18 @@ use crate::{
 // TODO: why do we multiply by 4? composite-video-simulator does this for every filter and ntscqt defines NTSC_RATE the
 // same way as we do here.
 const NTSC_RATE: f32 = (315000000.00 / 88.0) * 4.0;
+// PAL color subcarrier is 4.43361875 MHz; same 4x sampling convention as above.
+const PAL_RATE: f32 = 4_433_618.75 * 4.0;
+
+impl VideoStandard {
+    /// The sample rate used for filter design (4x the color subcarrier frequency).
+    fn rate(self) -> f32 {
+        match self {
+            VideoStandard::Ntsc => NTSC_RATE,
+            VideoStandard::Pal => PAL_RATE,
+        }
+    }
+}
 
 /// Create a simple constant-k lowpass filter with the given frequency cutoff, which can then be used to filter a signal.
 fn make_lowpass(cutoff: f32, rate: f32) -> TransferFunction {
@@ -129,6 +141,8 @@ struct EffectCtx {
     seed: u64,
     /// Current frame index.
     frame_num: usize,
+    /// The video standard being emulated.
+    standard: VideoStandard,
     /// The "bandwidth scale" setting, used mainly for IIR filters.
     horizontal_scale: f32,
     /// The "vertical scale" setting.
@@ -177,6 +191,7 @@ impl EffectCtx {
             level: ctx.level,
             seed: settings.random_seed as u32 as u64,
             frame_num,
+            standard: settings.video_standard,
             horizontal_scale: scale_factor[0]
                 * video_size_scale_factor
                 * settings
@@ -306,9 +321,16 @@ impl EffectCtx {
     /// that statement seems unsourced and I can't find any info on it...)
     fn composite_chroma_lowpass(&self, frame: &mut YiqView, filter_type: FilterType) {
         let i_filter =
-            make_lowpass_for_type(1300000.0, NTSC_RATE * self.horizontal_scale, filter_type);
+            make_lowpass_for_type(1300000.0, self.standard.rate() * self.horizontal_scale, filter_type);
         let q_filter =
-            make_lowpass_for_type(600000.0, NTSC_RATE * self.horizontal_scale, filter_type);
+            make_lowpass_for_type(
+                match self.standard {
+                    VideoStandard::Ntsc => 600000.0,
+                    VideoStandard::Pal => 1300000.0,
+                },
+                self.standard.rate() * self.horizontal_scale,
+                filter_type,
+            );
 
         let width = frame.dimensions.0;
 
@@ -321,7 +343,7 @@ impl EffectCtx {
     /// Apply a less intense lowpass filter to the input chroma.
     fn composite_chroma_lowpass_lite(&self, frame: &mut YiqView, filter_type: FilterType) {
         let filter =
-            make_lowpass_for_type(2600000.0, NTSC_RATE * self.horizontal_scale, filter_type);
+            make_lowpass_for_type(2600000.0, self.standard.rate() * self.horizontal_scale, filter_type);
 
         let width = frame.dimensions.0;
 
@@ -333,7 +355,25 @@ impl EffectCtx {
 
     /// Calculate the chroma subcarrier phase for a given row/field.
     fn chroma_phase_shift(&self, line_index: usize) -> usize {
-        (self.frame_num + (line_index << 1)) & 2
+        match self.standard {
+            VideoStandard::Ntsc => (self.frame_num + (line_index << 1)) & 2,
+            // PAL: 283.75 cycles per line, i.e. the carrier advances 270 degrees (3 samples) each line.
+            VideoStandard::Pal => (3 * (line_index + self.frame_num)) & 3,
+        }
+    }
+
+    /// Sign of the Q/V axis for a given line. Always +1 for NTSC; PAL inverts V on alternate lines.
+    fn chroma_v_sign(&self, line_index: usize) -> f32 {
+        match self.standard {
+            VideoStandard::Ntsc => 1.0,
+            VideoStandard::Pal => {
+                if (line_index + self.frame_num) & 1 == 0 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
+        }
     }
 
     /// Modulate the chrominance signal (I and Q planes) into the Y (luminance) plane.
@@ -361,8 +401,9 @@ impl EffectCtx {
                         })
                     };
 
+                    let v_sign = self.chroma_v_sign(index);
                     let i_mult = offset_wave(xi);
-                    let q_mult = offset_wave(xi + 3);
+                    let q_mult = offset_wave(xi + 3) * S::f32s::splat(simd, v_sign);
                     let mut y_chunks = y.chunks_exact_mut(S::f32s::N);
                     let mut i_chunks = i.chunks_exact(S::f32s::N);
                     let mut q_chunks = q.chunks_exact(S::f32s::N);
@@ -385,7 +426,7 @@ impl EffectCtx {
                         .enumerate()
                     {
                         let phase = (index + xi) & 3;
-                        *y += i * I_MULT[phase] + q * Q_MULT[phase];
+                        *y += i * I_MULT[phase] + q * Q_MULT[phase] * v_sign;
                     }
                 },
             )
@@ -422,9 +463,10 @@ impl EffectCtx {
         let i_mult_inv_l = offset_wave(xi) * 0.5;
         let i_mult_inv_c = offset_wave(1 + xi);
         let i_mult_inv_r = offset_wave(2 + xi) * 0.5;
-        let q_mult_inv_l = offset_wave(3 + xi) * 0.5;
-        let q_mult_inv_c = offset_wave(4 + xi);
-        let q_mult_inv_r = offset_wave(5 + xi) * 0.5;
+        let v_sign = self.chroma_v_sign(line_index);
+        let q_mult_inv_l = offset_wave(3 + xi) * (0.5 * v_sign);
+        let q_mult_inv_c = offset_wave(4 + xi) * v_sign;
+        let q_mult_inv_r = offset_wave(5 + xi) * (0.5 * v_sign);
 
         let mut index = 1;
         while index < width.saturating_sub(S::f32s::N) {
@@ -461,19 +503,19 @@ impl EffectCtx {
             let offset_c = (index + xi) & 3;
             let chroma_c = y[index] - modulated[index];
             let mut i_modulated = chroma_c * I_MULT_INV[offset_c];
-            let mut q_modulated = chroma_c * Q_MULT_INV[offset_c];
+            let mut q_modulated = chroma_c * Q_MULT_INV[offset_c] * v_sign;
 
             if index < width - 1 {
                 let offset_r = (index.wrapping_add(1) + xi) & 3;
                 let chroma_r = y[index + 1] - modulated[index + 1];
                 i_modulated += chroma_r * I_MULT_INV[offset_r] * 0.5;
-                q_modulated += chroma_r * Q_MULT_INV[offset_r] * 0.5;
+                q_modulated += chroma_r * Q_MULT_INV[offset_r] * 0.5 * v_sign;
             }
             if index > 0 {
                 let offset_l = (index.wrapping_sub(1) + xi) & 3;
                 let chroma_l = y[index - 1] - modulated[index - 1];
                 i_modulated += chroma_l * I_MULT_INV[offset_l] * 0.5;
-                q_modulated += chroma_l * Q_MULT_INV[offset_l] * 0.5;
+                q_modulated += chroma_l * Q_MULT_INV[offset_l] * 0.5 * v_sign;
             }
             i[index] = i_modulated;
             q[index] = q_modulated;
@@ -824,6 +866,16 @@ impl EffectCtx {
                     filter_mode,
                     ChromaDemodulationFilter::TwoD | ChromaDemodulationFilter::TwoDAdaptive
                 ))
+        {
+            filter_mode = ChromaDemodulationFilter::Notch;
+        }
+
+        // The comb/2D filters assume NTSC's 180-degree line-to-line phase alternation.
+        if self.standard == VideoStandard::Pal
+            && !matches!(
+                filter_mode,
+                ChromaDemodulationFilter::Box | ChromaDemodulationFilter::Notch
+            )
         {
             filter_mode = ChromaDemodulationFilter::Notch;
         }
@@ -1435,7 +1487,7 @@ impl NtscEffect {
         if self.composite_sharpening != 0.0 {
             let preemphasis_filter = make_lowpass(
                 (315000000.0 / 88.0 / 2.0) * ctx.horizontal_scale,
-                NTSC_RATE * ctx.horizontal_scale,
+                ctx.standard.rate() * ctx.horizontal_scale,
             )
             .with_scale(-self.composite_sharpening);
             ctx.filter_plane(yiq.y, width, &preemphasis_filter, InitialCondition::Zero, 0);
@@ -1566,12 +1618,12 @@ impl NtscEffect {
                 // TODO: use a better filter! this effect's output looks way more smear-y than real VHS
                 let luma_filter = make_lowpass_for_type(
                     luma_cut,
-                    NTSC_RATE * ctx.horizontal_scale,
+                    ctx.standard.rate() * ctx.horizontal_scale,
                     self.filter_type,
                 );
                 let chroma_filter = make_lowpass_for_type(
                     chroma_cut,
-                    NTSC_RATE * ctx.horizontal_scale,
+                    ctx.standard.rate() * ctx.horizontal_scale,
                     self.filter_type,
                 );
 
@@ -1602,7 +1654,7 @@ impl NtscEffect {
                 );
 
                 let luma_filter_single =
-                    make_lowpass(luma_cut, NTSC_RATE * ctx.horizontal_scale).with_scale(-1.6);
+                    make_lowpass(luma_cut, ctx.standard.rate() * ctx.horizontal_scale).with_scale(-1.6);
                 ctx.filter_plane(yiq.y, width, &luma_filter_single, InitialCondition::Zero, 0);
             }
 
@@ -1621,7 +1673,7 @@ impl NtscEffect {
                 };
                 let luma_sharpen_filter = make_lowpass_for_type(
                     luma_cut * frequency_extra_multiplier * sharpen.frequency,
-                    NTSC_RATE * ctx.horizontal_scale,
+                    ctx.standard.rate() * ctx.horizontal_scale,
                     self.filter_type,
                 )
                 .with_scale(-sharpen.intensity * 2.0 * sharpen.frequency);
@@ -1629,7 +1681,7 @@ impl NtscEffect {
                 // I'm not sure if I'm implementing it wrong, but chroma sharpening looks awful.
                 /*let chroma_sharpen_filter = make_lowpass_for_type(
                     chroma_cut * frequency_extra_multiplier * sharpen.frequency,
-                    NTSC_RATE * info.horizontal_scale,
+                    ctx.standard.rate() * info.horizontal_scale,
                     self.filter_type,
                 ).with_scale(-sharpen.intensity * 0.85 * sharpen.frequency);*/
                 ctx.filter_plane(
